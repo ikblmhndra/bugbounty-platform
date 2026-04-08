@@ -194,6 +194,7 @@ class DashboardStats(BaseModel):
     total_targets: int
     total_scans: int
     active_scans: int
+    total_assets: int
     total_findings: int
     critical_findings: int
     high_findings: int

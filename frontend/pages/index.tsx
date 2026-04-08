@@ -47,10 +47,11 @@ export default function Dashboard() {
       />
 
       {/* Stats grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
         <StatCard label="Targets"       value={stats.total_targets}    accent="text-accent" />
         <StatCard label="Total Scans"   value={stats.total_scans}      accent="text-text-secondary" />
         <StatCard label="Active Scans"  value={stats.active_scans}     accent="text-blue-400" />
+        <StatCard label="Total Assets"  value={stats.total_assets}      accent="text-cyan-400" />
         <StatCard label="Total Findings" value={stats.total_findings}  accent="text-text-primary" />
       </div>
 
@@ -85,6 +86,7 @@ export default function Dashboard() {
                       </p>
                     </div>
                     <div className="flex items-center gap-3">
+                      <span className="text-xs text-text-secondary">{scan.assets_found} assets</span>
                       <span className="text-xs text-text-secondary">{scan.findings_count} findings</span>
                       <StatusBadge status={scan.status} />
                     </div>

@@ -113,6 +113,7 @@ async def get_dashboard(db: AsyncSession = Depends(get_async_db)):
     active_scans = (await db.execute(
         select(func.count(Scan.id)).where(Scan.status == ScanStatus.RUNNING)
     )).scalar_one()
+    total_assets = (await db.execute(select(func.count(Asset.id)))).scalar_one()
     total_findings = (await db.execute(select(func.count(Finding.id)))).scalar_one()
 
     # Severity breakdown
@@ -141,6 +142,7 @@ async def get_dashboard(db: AsyncSession = Depends(get_async_db)):
         total_targets=total_targets,
         total_scans=total_scans,
         active_scans=active_scans,
+        total_assets=total_assets,
         total_findings=total_findings,
         critical_findings=sev_counts.get("critical", 0),
         high_findings=sev_counts.get("high", 0),

@@ -92,6 +92,7 @@ export interface DashboardStats {
   total_targets: number;
   total_scans: number;
   active_scans: number;
+  total_assets: number;
   total_findings: number;
   critical_findings: number;
   high_findings: number;
