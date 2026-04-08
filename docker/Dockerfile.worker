@@ -73,6 +73,13 @@ RUN CGO_ENABLED=1 go install -v \
 
 ENV GOWITNESS_CHROME_PATH=/usr/bin/chromium
 
+# ── FFUF wordlists ───────────────────────────────────────────────────────────
+# Pre-download commonly used ffuf wordlists into a stable path.
+RUN mkdir -p /opt/wordlists/ffuf && \
+    wget -q -O /opt/wordlists/ffuf/common.txt http://ffuf.me/wordlist/common.txt && \
+    wget -q -O /opt/wordlists/ffuf/parameters.txt http://ffuf.me/wordlist/parameters.txt && \
+    wget -q -O /opt/wordlists/ffuf/subdomains.txt http://ffuf.me/wordlist/subdomains.txt
+
 # ── Nuclei templates ──────────────────────────────────────────────────────────
 # Pre-download at build time so the first scan doesn't stall on network I/O.
 RUN nuclei -update-templates -silent || true

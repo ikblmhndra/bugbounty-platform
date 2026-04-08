@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     default_scan_timeout: int = 3600
     max_parallel_tasks: int = 5
     nuclei_severity: str = "low,medium,high,critical"
-    ffuf_wordlist: str = "/usr/share/wordlists/dirb/common.txt"
+    ffuf_wordlist: str = "/opt/wordlists/ffuf/common.txt"
 
     # Output directories
     reports_dir: str = "./reports"

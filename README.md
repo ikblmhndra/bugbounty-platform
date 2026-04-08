@@ -204,7 +204,7 @@ All configuration is via environment variables (`.env`):
 | `TELEGRAM_BOT_TOKEN`     | *(empty)*                            | Bot token from @BotFather                    |
 | `TELEGRAM_ALLOWED_USERS` | *(empty)*                            | Comma-separated user IDs (empty = allow all) |
 | `NUCLEI_SEVERITY`        | low,medium,high,critical             | Nuclei scan severity filter                  |
-| `FFUF_WORDLIST`          | /usr/share/wordlists/dirb/common.txt | Wordlist for ffuf                            |
+| `FFUF_WORDLIST`          | /opt/wordlists/ffuf/common.txt | Wordlist for ffuf                            |
 | `DEFAULT_SCAN_TIMEOUT`   | 3600                                 | Max scan duration (seconds)                  |
 | `REPORTS_DIR`            | ./reports                            | Where reports are saved                      |
 | `SCREENSHOTS_DIR`        | ./screenshots                        | Where screenshots are saved                  |
