@@ -56,6 +56,7 @@ RUN CGO_ENABLED=0 go install -v github.com/lc/gau/v2/cmd/gau@latest
 RUN CGO_ENABLED=0 go install -v github.com/tomnomnom/waybackurls@latest
 RUN CGO_ENABLED=0 go install -v github.com/ffuf/ffuf/v2@latest
 RUN CGO_ENABLED=0 go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+RUN CGO_ENABLED=0 go install -v github.com/hahwul/dalfox/v2@latest
 
 # ── katana (requires CGO + libpcap) ───────────────────────────────────────────
 # katana links against libpcap for raw packet capture support.
@@ -89,8 +90,13 @@ RUN nuclei -update-templates -silent || true
 # ── Python dependencies ───────────────────────────────────────────────────────
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir sqlmap
 
 COPY app/ ./app/
+
+# ── Uninstall httpx ────────────────────────────────────────────────────────────
+# We use the system httpx from the worker image, not the one from the requirements.txt.
+RUN pip uninstall -y httpx
 
 RUN groupadd -g 1000 appuser && useradd -m -u 1000 -g appuser appuser && chown -R appuser:appuser /app
 USER appuser
