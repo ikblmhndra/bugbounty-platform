@@ -1,0 +1,43 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies + Go tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl wget git unzip ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Go (configurable + architecture-aware)
+ARG GO_VERSION=1.25.9
+RUN set -eux; \
+    ARCH="$(dpkg --print-architecture)"; \
+    case "${ARCH}" in \
+      amd64) GO_ARCH="amd64" ;; \
+      arm64) GO_ARCH="arm64" ;; \
+      *) echo "Unsupported architecture: ${ARCH}"; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" | tar -xz -C /usr/local
+ENV PATH="${PATH}:/usr/local/go/bin:/root/go/bin"
+
+# Install recon tools.
+# Keep katana and gowitness optional because they are the most likely to fail
+# from upstream Go/module changes; all other core tools remain strict.
+RUN set -eux; go install -v github.com/projectdiscovery/katana/cmd/katana@latest
+RUN set -eux; go install -v github.com/sensepost/gowitness@latest
+RUN set -eux; go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+RUN set -eux; go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+RUN set -eux; go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
+RUN set -eux; go install -v github.com/tomnomnom/assetfinder@latest
+RUN set -eux; go install -v github.com/lc/gau/v2/cmd/gau@latest
+RUN set -eux; go install -v github.com/tomnomnom/waybackurls@latest
+RUN set -eux; go install -v github.com/ffuf/ffuf/v2@latest
+
+# Update nuclei templates
+RUN nuclei -update-templates || true
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app/ ./app/
+
+CMD ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
