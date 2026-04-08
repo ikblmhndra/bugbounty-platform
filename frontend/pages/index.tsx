@@ -31,6 +31,14 @@ export default function Dashboard() {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5);
 
+  const getScanProgress = (scan: (typeof stats.recent_scans)[number]) => {
+    if (!scan.steps_total || scan.steps_total <= 0) return 0;
+    return Math.min(100, Math.round((scan.steps_completed / scan.steps_total) * 100));
+  };
+
+  const formatStepName = (step?: string) =>
+    step ? step.replace(/_/g, " ") : "pending";
+
   return (
     <Layout>
       <SectionHeader
@@ -67,17 +75,34 @@ export default function Dashboard() {
                 <Link
                   key={scan.id}
                   href={`/scans/${scan.id}`}
-                  className="flex items-center justify-between p-3 rounded-md bg-bg-tertiary hover:border-accent border border-transparent transition-colors"
+                  className="p-3 rounded-md bg-bg-tertiary hover:border-accent border border-transparent transition-colors"
                 >
-                  <div>
-                    <p className="font-mono text-xs text-text-primary">{scan.id.slice(0, 12)}...</p>
-                    <p className="text-xs text-text-secondary mt-0.5">
-                      {formatDistanceToNow(new Date(scan.created_at), { addSuffix: true })}
-                    </p>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-mono text-xs text-text-primary">{scan.id.slice(0, 12)}...</p>
+                      <p className="text-xs text-text-secondary mt-0.5">
+                        {formatDistanceToNow(new Date(scan.created_at), { addSuffix: true })}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-text-secondary">{scan.findings_count} findings</span>
+                      <StatusBadge status={scan.status} />
+                    </div>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs text-text-secondary">{scan.findings_count} findings</span>
-                    <StatusBadge status={scan.status} />
+
+                  <div className="mt-3">
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-text-secondary capitalize">{formatStepName(scan.current_step)}</span>
+                      <span className="text-text-secondary">
+                        {scan.steps_completed}/{scan.steps_total || 0} ({getScanProgress(scan)}%)
+                      </span>
+                    </div>
+                    <div className="w-full bg-bg-primary rounded-full h-2">
+                      <div
+                        className="bg-blue-400 h-2 rounded-full transition-all"
+                        style={{ width: `${getScanProgress(scan)}%` }}
+                      />
+                    </div>
                   </div>
                 </Link>
               ))}

@@ -2,42 +2,86 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies + Go tools
+# ── System dependencies ────────────────────────────────────────────────────────
+# gcc / libc-dev / libpcap-dev are required for CGO-enabled Go tools:
+#   katana  → uses chromedp which requires CGO
+#   gowitness → also CGO-linked
+# chromium + fonts are needed for gowitness/katana headless browser mode.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl wget git unzip ca-certificates \
+    curl \
+    wget \
+    git \
+    unzip \
+    ca-certificates \
+    # CGO build requirements
+    gcc \
+    libc6-dev \
+    libpcap-dev \
+    # Headless browser requirements (gowitness / katana -headless)
+    chromium \
+    chromium-driver \
+    fonts-liberation \
+    libgbm1 \
+    libnss3 \
+    libatk-bridge2.0-0 \
+    libgtk-3-0 \
+    libxss1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Go (configurable + architecture-aware)
+# ── Go installation ────────────────────────────────────────────────────────────
+# Pin to a stable release. Update GO_VERSION as needed — the download URL is
+# architecture-aware so this works on both amd64 and arm64 build hosts.
 ARG GO_VERSION=1.25.9
 RUN set -eux; \
     ARCH="$(dpkg --print-architecture)"; \
     case "${ARCH}" in \
       amd64) GO_ARCH="amd64" ;; \
       arm64) GO_ARCH="arm64" ;; \
-      *) echo "Unsupported architecture: ${ARCH}"; exit 1 ;; \
+      *) echo "Unsupported arch: ${ARCH}" && exit 1 ;; \
     esac; \
-    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" | tar -xz -C /usr/local
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" \
+      | tar -xz -C /usr/local
+
 ENV PATH="${PATH}:/usr/local/go/bin:/root/go/bin"
+ENV CGO_ENABLED=1
 
-# Install recon tools.
-# Keep katana and gowitness optional because they are the most likely to fail
-# from upstream Go/module changes; all other core tools remain strict.
-RUN set -eux; go install -v github.com/projectdiscovery/katana/cmd/katana@latest
-RUN set -eux; go install -v github.com/sensepost/gowitness@latest
-RUN set -eux; go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-RUN set -eux; go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
-RUN set -eux; go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
-RUN set -eux; go install -v github.com/tomnomnom/assetfinder@latest
-RUN set -eux; go install -v github.com/lc/gau/v2/cmd/gau@latest
-RUN set -eux; go install -v github.com/tomnomnom/waybackurls@latest
-RUN set -eux; go install -v github.com/ffuf/ffuf/v2@latest
+# ── Core recon tools (pure-Go, CGO_ENABLED=0 for faster / portable builds) ────
+# These have no CGO deps so we can build them without the C toolchain overhead.
+RUN CGO_ENABLED=0 go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+RUN CGO_ENABLED=0 go install -v github.com/tomnomnom/assetfinder@latest
+RUN CGO_ENABLED=0 go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
+RUN CGO_ENABLED=0 go install -v github.com/lc/gau/v2/cmd/gau@latest
+RUN CGO_ENABLED=0 go install -v github.com/tomnomnom/waybackurls@latest
+RUN CGO_ENABLED=0 go install -v github.com/ffuf/ffuf/v2@latest
+RUN CGO_ENABLED=0 go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
 
-# Update nuclei templates
-RUN nuclei -update-templates || true
+# ── katana (requires CGO + libpcap) ───────────────────────────────────────────
+# katana links against libpcap for raw packet capture support.
+# CGO_ENABLED=1 + libpcap-dev must both be present.
+# Pin to a known-good release tag rather than @latest to avoid surprise breakage.
+ARG KATANA_VERSION=v1.1.0
+RUN CGO_ENABLED=1 go install -v \
+    "github.com/projectdiscovery/katana/cmd/katana@${KATANA_VERSION}"
 
+# ── gowitness (CGO, headless Chrome) ──────────────────────────────────────────
+# gowitness uses go-rod which requires CGO and a real Chromium binary.
+# Tell gowitness where the system Chromium lives via env so it doesn't
+# try to download its own copy at runtime.
+ARG GOWITNESS_VERSION=v2.5.1
+RUN CGO_ENABLED=1 go install -v \
+    "github.com/sensepost/gowitness@${GOWITNESS_VERSION}"
+
+ENV GOWITNESS_CHROME_PATH=/usr/bin/chromium
+
+# ── Nuclei templates ──────────────────────────────────────────────────────────
+# Pre-download at build time so the first scan doesn't stall on network I/O.
+RUN nuclei -update-templates -silent || true
+
+# ── Python dependencies ───────────────────────────────────────────────────────
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
 
-CMD ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
+CMD ["celery", "-A", "app.workers.celery_app", \
+     "worker", "--loglevel=info", "--concurrency=4", "-Q", "scans"]

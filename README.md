@@ -4,6 +4,19 @@ A production-grade, modular security assessment platform for authorized bug boun
 
 > **IMPORTANT**: This platform is for use **only in authorized environments**. All validation steps are analyst-assisted. No autonomous exploitation is performed.
 
+## Documentation
+
+Project documentation is available in `docs/`:
+
+- `docs/README.md` - documentation index
+- `docs/getting-started.md` - setup and first run
+- `docs/architecture.md` - system architecture and data flow
+- `docs/scanning-pipeline.md` - scan orchestration details
+- `docs/api-reference.md` - endpoint usage quick reference
+- `docs/deployment.md` - deployment and hardening guidance
+- `docs/troubleshooting.md` - common issues and fixes
+- `docs/contributing.md` - development and contribution workflow
+
 ---
 
 ## Architecture

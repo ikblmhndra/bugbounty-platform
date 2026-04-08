@@ -89,9 +89,13 @@ class ScanListResponse(OrmBase):
     id: str
     target_id: str
     status: ScanStatus
+    steps_total: int
+    steps_completed: int
+    current_step: Optional[str]
     assets_found: int
     findings_count: int
     created_at: datetime
+    started_at: Optional[datetime]
     completed_at: Optional[datetime]
 
 
