@@ -396,6 +396,8 @@ def run_scan(self, scan_id: str) -> dict:
             _log(db, scan_id, f"Attack path error: {e}", level="warning", step="attack_path_analysis")
 
     # ── Finalize ─────────────────────────────────────────────────────────────
+    final_assets = 0
+    final_findings = 0
     with get_sync_db() as db:
         scan = db.query(Scan).filter_by(id=scan_id).first()
         _update_scan(
@@ -409,11 +411,13 @@ def run_scan(self, scan_id: str) -> dict:
                  "assets": scan.assets_found,
                  "findings": scan.findings_count,
              })
+        final_assets = scan.assets_found
+        final_findings = scan.findings_count
 
-    logger.info(f"Scan {scan_id} completed. Assets: {scan.assets_found}, Findings: {scan.findings_count}")
+    logger.info(f"Scan {scan_id} completed. Assets: {final_assets}, Findings: {final_findings}")
     return {
         "scan_id": scan_id,
         "status": "completed",
-        "assets": scan.assets_found,
-        "findings": scan.findings_count,
+        "assets": final_assets,
+        "findings": final_findings,
     }

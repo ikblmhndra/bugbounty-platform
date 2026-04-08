@@ -22,6 +22,7 @@ celery_app.conf.update(
     enable_utc=True,
     task_track_started=True,
     task_acks_late=True,
+    broker_connection_retry_on_startup=True,
     worker_prefetch_multiplier=1,
     task_soft_time_limit=settings.default_scan_timeout,
     task_time_limit=settings.default_scan_timeout + 300,

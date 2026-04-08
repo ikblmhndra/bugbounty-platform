@@ -42,8 +42,10 @@ RUN set -eux; \
     curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" \
       | tar -xz -C /usr/local
 
-ENV PATH="${PATH}:/usr/local/go/bin:/root/go/bin"
+ENV GOBIN=/opt/tools/bin
+ENV PATH="/opt/tools/bin:/usr/local/go/bin:${PATH}"
 ENV CGO_ENABLED=1
+RUN mkdir -p /opt/tools/bin
 
 # ── Core recon tools (pure-Go, CGO_ENABLED=0 for faster / portable builds) ────
 # These have no CGO deps so we can build them without the C toolchain overhead.
@@ -89,6 +91,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
+
+RUN groupadd -g 1000 appuser && useradd -m -u 1000 -g appuser appuser && chown -R appuser:appuser /app
+USER appuser
 
 CMD ["celery", "-A", "app.workers.celery_app", \
      "worker", "--loglevel=info", "--concurrency=4", "-Q", "scans"]
