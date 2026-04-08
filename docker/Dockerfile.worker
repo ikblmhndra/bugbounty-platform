@@ -59,7 +59,7 @@ RUN CGO_ENABLED=0 go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei
 # katana links against libpcap for raw packet capture support.
 # CGO_ENABLED=1 + libpcap-dev must both be present.
 # Pin to a known-good release tag rather than @latest to avoid surprise breakage.
-ARG KATANA_VERSION=v1.1.0
+ARG KATANA_VERSION=latest
 RUN CGO_ENABLED=1 go install -v \
     "github.com/projectdiscovery/katana/cmd/katana@${KATANA_VERSION}"
 
@@ -67,7 +67,7 @@ RUN CGO_ENABLED=1 go install -v \
 # gowitness uses go-rod which requires CGO and a real Chromium binary.
 # Tell gowitness where the system Chromium lives via env so it doesn't
 # try to download its own copy at runtime.
-ARG GOWITNESS_VERSION=v2.5.1
+ARG GOWITNESS_VERSION=latest
 RUN CGO_ENABLED=1 go install -v \
     "github.com/sensepost/gowitness@${GOWITNESS_VERSION}"
 
