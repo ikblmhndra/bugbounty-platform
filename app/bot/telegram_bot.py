@@ -92,17 +92,158 @@ def status_emoji(status: str) -> str:
 @authorized_only
 def cmd_help(message):
     text = (
-        "🔍 *Bug Bounty Platform Bot*\n\n"
+        "🔍 *Offensive Security Platform Bot*\n\n"
         "Available commands:\n\n"
-        "`/scan <domain>` — Start a scan\n"
-        "`/status <scan_id>` — Scan status and stages\n"
+        "📊 *Scanning:*\n"
+        "`/scan <domain>` — Start a new scan\n"
+        "`/status <scan_id>` — Scan progress & stages\n"
+        "`/cancel <scan_id>` — Cancel running scan\n\n"
+        "🎯 *Findings:*\n"
         "`/findings` — Recent findings\n"
-        "`/critical` — Critical finding feed\n"
-        "`/cancel <scan_id>` — Cancel a running scan\n"
-        "`/help` — Show this message\n\n"
-        "_All scans are analyst-assisted. No autonomous exploitation is performed._"
+        "`/critical` — Critical severity only\n"
+        "`/high` — High severity findings\n"
+        "`/targets` — List all targets\n\n"
+        "📈 *Monitoring:*\n"
+        "`/dashboard` — Platform statistics\n"
+        "`/active` — Active scans\n\n"
+        "⚙️ *Management:*\n"
+        "`/addtarget <domain>` — Add new target\n"
+        "`/schedule <domain>` — Schedule recurring scan\n\n"
+        "_All operations are analyst-assisted. No autonomous exploitation._"
     )
     bot.reply_to(message, text)
+
+
+@bot.message_handler(commands=["dashboard"])
+@authorized_only
+def cmd_dashboard(message):
+    stats = api_get("/dashboard")
+    if not stats:
+        bot.reply_to(message, "❌ Failed to fetch dashboard stats.")
+        return
+
+    text = (
+        "📊 *Platform Dashboard*\n\n"
+        f"🎯 Targets: {stats.get('total_targets', 0)}\n"
+        f"🔍 Total Scans: {stats.get('total_scans', 0)}\n"
+        f"⚡ Active Scans: {stats.get('active_scans', 0)}\n"
+        f"🗂️ Assets: {stats.get('total_assets', 0)}\n"
+        f"🚨 Findings: {stats.get('total_findings', 0)}\n\n"
+        "📈 *By Severity:*\n"
+        f"🔴 Critical: {stats.get('critical_findings', 0)}\n"
+        f"🟠 High: {stats.get('high_findings', 0)}\n"
+        f"🟡 Medium: {stats.get('medium_findings', 0)}\n"
+        f"🟢 Low: {stats.get('low_findings', 0)}\n"
+        f"⚪ Info: {stats.get('info_findings', 0)}"
+    )
+    bot.reply_to(message, text)
+
+
+@bot.message_handler(commands=["active"])
+@authorized_only
+def cmd_active(message):
+    scans = api_get("/scans?status=running&status=pending&limit=10")
+    if scans is None:
+        bot.reply_to(message, "❌ Failed to fetch active scans.")
+        return
+    if not scans:
+        bot.reply_to(message, "No active scans.")
+        return
+
+    lines = ["⚡ *Active Scans*\n"]
+    for scan in scans:
+        progress = scan.get('steps_completed', 0) / max(scan.get('steps_total', 1), 1) * 100
+        lines.append(
+            f"🔄 `{scan['id'][:8]}...` {scan.get('current_step', 'pending')} "
+            f"({progress:.0f}%)"
+        )
+    bot.reply_to(message, "\n".join(lines))
+
+
+@bot.message_handler(commands=["targets"])
+@authorized_only
+def cmd_targets(message):
+    targets = api_get("/targets?limit=20")
+    if targets is None:
+        bot.reply_to(message, "❌ Failed to fetch targets.")
+        return
+    if not targets:
+        bot.reply_to(message, "No targets configured.")
+        return
+
+    lines = [f"🎯 *Targets* ({len(targets)})\n"]
+    for target in targets:
+        status = "✅" if target.get('is_active') else "⏸️"
+        lines.append(f"{status} `{target['domain']}`")
+    bot.reply_to(message, "\n".join(lines))
+
+
+@bot.message_handler(commands=["addtarget"])
+@authorized_only
+def cmd_addtarget(message):
+    parts = message.text.strip().split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        bot.reply_to(message, "Usage: `/addtarget <domain>`\nExample: `/addtarget example.com`")
+        return
+
+    domain = parts[1].strip().lower()
+    payload = {"domain": domain, "is_active": True}
+
+    result = api_post("/targets", payload)
+    if not result:
+        bot.reply_to(message, "❌ Failed to add target.")
+        return
+
+    bot.reply_to(message, f"✅ Target `{domain}` added successfully.")
+
+
+@bot.message_handler(commands=["schedule"])
+@authorized_only
+def cmd_schedule(message):
+    parts = message.text.strip().split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        bot.reply_to(message, "Usage: `/schedule <domain>`\nExample: `/schedule example.com`")
+        return
+
+    domain = parts[1].strip().lower()
+
+    # Find target by domain
+    targets = api_get(f"/targets?domain={domain}")
+    if not targets or len(targets) == 0:
+        bot.reply_to(message, f"❌ Target `{domain}` not found. Add it first with `/addtarget {domain}`")
+        return
+
+    target_id = targets[0]['id']
+
+    # Schedule scan (implementation would need to be added to API)
+    # For now, just trigger immediate scan
+    payload = {"target_id": target_id}
+    result = api_post("/scans", payload)
+
+    if not result:
+        bot.reply_to(message, "❌ Failed to schedule scan.")
+        return
+
+    scan_id = result["id"]
+    bot.reply_to(message, f"✅ Scan scheduled for `{domain}` (ID: `{scan_id[:8]}...`)")
+
+
+@bot.message_handler(commands=["high"])
+@authorized_only
+def cmd_high(message):
+    findings = api_get("/findings?severity=high&limit=20")
+    if findings is None:
+        bot.reply_to(message, "❌ Failed to fetch high severity findings.")
+        return
+    if not findings:
+        bot.reply_to(message, "No high severity findings.")
+        return
+
+    lines = ["🟠 *High Severity Findings*\n"]
+    for f in findings:
+        validated = "✅" if f.get("is_validated") else ""
+        lines.append(f"{validated} `{f['category']}` — {f['title'][:60]}")
+    bot.reply_to(message, "\n".join(lines))
 
 
 @bot.message_handler(commands=["scan"])

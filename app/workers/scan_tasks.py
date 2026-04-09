@@ -8,14 +8,28 @@ from sqlalchemy.orm import Session
 from app.models.models import Asset, AssetType, Evidence, Finding, FindingCategory, FindingSeverity, FindingStatus, Log, Scan, ScanStage, ScanStageType, ScanStatus, StageStatus, Target
 from app.orchestration.controls import acquire_target_lock
 from app.orchestration.state_machine import STAGE_ORDER
-from app.plugins import build_default_registry
+from app.plugins.base import PluginContext
 from app.services.analysis_service import normalize_nuclei_findings
 from app.services.finding_engine import dedup_fingerprint, endpoint_signature, score_finding, tags_for_category
 from app.services.normalization import in_scope, normalize_asset
+from app.plugins.builtin import FfufPlugin, HttpProbePlugin, NaabuPlugin, NucleiPlugin, SubdomainPlugin
 from app.utils.database import get_sync_db
 from app.workers.celery_app import celery_app
 
 logger = get_task_logger(__name__)
+
+
+def build_default_registry():
+    """Build the default plugin registry."""
+    return {
+        "subdomain": SubdomainPlugin(),
+        "http_probe": HttpProbePlugin(),
+        "naabu": NaabuPlugin(),
+        "nuclei": NucleiPlugin(),
+        "ffuf": FfufPlugin(),
+    }
+
+
 registry = build_default_registry()
 
 
@@ -110,6 +124,8 @@ def run_scan(self, scan_id: str) -> dict:
 
         for stage in STAGE_ORDER:
             for attempt in range(0, 3):
+                target_domain = None
+                scan_options = None
                 with get_sync_db() as db:
                     scan = db.query(Scan).filter_by(id=scan_id).first()
                     target = db.query(Target).filter_by(id=scan.target_id).first()
@@ -120,45 +136,84 @@ def run_scan(self, scan_id: str) -> dict:
                     _advance_step(scan, stage.value)
                     _log(db, scan_id, f"Stage started: {stage.value}", step=stage.value)
                     db.commit()
+                    # Store values for use outside db context
+                    target_domain = target.domain
+                    scan_options = scan.options or {}
                 try:
                     if stage == ScanStageType.RECON:
-                        runtime["recon"] = {"target": target.domain}
+                        runtime["recon"] = {"target": target_domain}
                     elif stage == ScanStageType.ENUMERATION:
-                        out = asyncio.run(registry.get("subdomain").run(type("ctx", (), {"target_domain": target.domain, "options": scan.options or {}, "previous": runtime})()))
-                        runtime.update(out)
-                        with get_sync_db() as db:
-                            scan = db.query(Scan).filter_by(id=scan_id).first()
-                            target = db.query(Target).filter_by(id=scan.target_id).first()
-                            for item in out.get("subdomains", []):
-                                _upsert_asset(db, target, scan, AssetType.SUBDOMAIN, item, source="subfinder")
-                            db.commit()
+                        plugin = registry.get("subdomain")
+                        context = PluginContext(
+                            target_domain=target_domain,
+                            options=scan_options,
+                            previous=runtime,
+                            timeout=300
+                        )
+                        result = asyncio.run(plugin.run_with_retry(context))
+                        if result.success:
+                            out = result.data
+                            runtime.update(out)
+                            with get_sync_db() as db:
+                                scan = db.query(Scan).filter_by(id=scan_id).first()
+                                target = db.query(Target).filter_by(id=scan.target_id).first()
+                                for item in out.get("subdomains", []):
+                                    _upsert_asset(db, target, scan, AssetType.SUBDOMAIN, item, source="subfinder")
+                                db.commit()
+                        else:
+                            _log(db, scan_id, f"Subdomain enumeration failed: {result.error}", level="error", step=stage.value)
+                            raise Exception(f"Subdomain enumeration failed: {result.error}")
                     elif stage == ScanStageType.PROBING:
-                        out = asyncio.run(registry.get("http_probe").run(type("ctx", (), {"target_domain": target.domain, "options": scan.options or {}, "previous": runtime})()))
-                        runtime.update(out)
-                        with get_sync_db() as db:
-                            scan = db.query(Scan).filter_by(id=scan_id).first()
-                            target = db.query(Target).filter_by(id=scan.target_id).first()
-                            for probe in out.get("raw_probe", []):
-                                if probe.get("is_alive"):
-                                    _upsert_asset(
-                                        db,
-                                        target,
-                                        scan,
-                                        AssetType.URL,
-                                        probe.get("url", ""),
-                                        source="httpx",
-                                        raw_data=probe,
-                                        ip_address=probe.get("ip"),
-                                        is_alive=True,
-                                        status_code=probe.get("status_code"),
-                                        technologies=probe.get("technologies", []),
-                                        headers=probe.get("headers", {}),
-                                    )
-                            scan.assets_found = db.query(Asset).filter_by(scan_id=scan.id).count()
-                            db.commit()
+                        plugin = registry.get("http_probe")
+                        context = PluginContext(
+                            target_domain=target_domain,
+                            options=scan_options,
+                            previous=runtime,
+                            timeout=600
+                        )
+                        result = asyncio.run(plugin.run_with_retry(context))
+                        if result.success:
+                            out = result.data
+                            runtime.update(out)
+                            with get_sync_db() as db:
+                                scan = db.query(Scan).filter_by(id=scan_id).first()
+                                target = db.query(Target).filter_by(id=scan.target_id).first()
+                                for probe in out.get("raw_probe", []):
+                                    if probe.get("is_alive"):
+                                        _upsert_asset(
+                                            db,
+                                            target,
+                                            scan,
+                                            AssetType.URL,
+                                            probe.get("url", ""),
+                                            source="httpx",
+                                            raw_data=probe,
+                                            ip_address=probe.get("ip"),
+                                            is_alive=True,
+                                            status_code=probe.get("status_code"),
+                                            technologies=probe.get("technologies", []),
+                                            headers=probe.get("headers", {}),
+                                        )
+                                scan.assets_found = db.query(Asset).filter_by(scan_id=scan.id).count()
+                                db.commit()
+                        else:
+                            _log(db, scan_id, f"HTTP probing failed: {result.error}", level="error", step=stage.value)
+                            raise Exception(f"HTTP probing failed: {result.error}")
                     elif stage == ScanStageType.SCANNING:
-                        out = asyncio.run(registry.get("nuclei").run(type("ctx", (), {"target_domain": target.domain, "options": scan.options or {}, "previous": runtime})()))
-                        runtime.update(out)
+                        plugin = registry.get("nuclei")
+                        context = PluginContext(
+                            target_domain=target_domain,
+                            options=scan_options,
+                            previous=runtime,
+                            timeout=1800  # 30 minutes for scanning
+                        )
+                        result = asyncio.run(plugin.run_with_retry(context))
+                        if result.success:
+                            out = result.data
+                            runtime.update(out)
+                        else:
+                            _log(db, scan_id, f"Vulnerability scanning failed: {result.error}", level="error", step=stage.value)
+                            raise Exception(f"Vulnerability scanning failed: {result.error}")
                     elif stage == ScanStageType.VALIDATION:
                         normalized = normalize_nuclei_findings(
                             [

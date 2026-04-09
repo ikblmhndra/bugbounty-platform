@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { href: "/attack-surface", label: "Attack Surface", icon: "🌐" },
   { href: "/scan-monitor", label: "Scan Monitor", icon: "🛰️" },
   { href: "/findings",  label: "Findings",     icon: "🔍" },
+  { href: "/scans",  label: "Scans",     icon: "🔍" },
   { href: "/target-profile", label: "Target Profile", icon: "🎯" },
 ];
 

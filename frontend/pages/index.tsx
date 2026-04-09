@@ -1,10 +1,18 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import Layout from "../components/Layout";
-import { StatCard, StatusBadge, SectionHeader, Spinner, EmptyState } from "../components/ui";
+import { StatCard, StatusBadge, SectionHeader, Spinner, EmptyState, SeverityBadge } from "../components/ui";
 import { apiClient, DashboardStats } from "../lib/api";
 import { formatDistanceToNow } from "date-fns";
-import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis, Cell, Legend } from "recharts";
+
+const SEVERITY_COLORS = {
+  critical: "#ef4444",
+  high: "#f97316",
+  medium: "#eab308",
+  low: "#22c55e",
+  info: "#6b7280"
+};
 
 export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -31,7 +39,12 @@ export default function Dashboard() {
   const topCategories = Object.entries(stats.findings_by_category)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5);
-  const severityChart = Object.entries(stats.findings_by_severity).map(([name, value]) => ({ name, value }));
+
+  const severityChart = Object.entries(stats.findings_by_severity).map(([name, value]) => ({
+    name: name.charAt(0).toUpperCase() + name.slice(1),
+    value,
+    color: SEVERITY_COLORS[name as keyof typeof SEVERITY_COLORS] || "#6b7280"
+  }));
 
   const getScanProgress = (scan: (typeof stats.recent_scans)[number]) => {
     if (!scan.steps_total || scan.steps_total <= 0) return 0;
@@ -44,118 +57,126 @@ export default function Dashboard() {
   return (
     <Layout>
       <SectionHeader
-        title="Dashboard"
-        subtitle="Overview of all scan activity and findings"
+        title="Security Operations Center"
+        subtitle="Real-time offensive security monitoring & orchestration"
       />
 
-      {/* Stats grid */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
-        <StatCard label="Targets"       value={stats.total_targets}    accent="text-accent" />
-        <StatCard label="Total Scans"   value={stats.total_scans}      accent="text-text-secondary" />
-        <StatCard label="Active Scans"  value={stats.active_scans}     accent="text-blue-400" />
-        <StatCard label="Total Assets"  value={stats.total_assets}      accent="text-cyan-400" />
-        <StatCard label="Total Findings" value={stats.total_findings}  accent="text-text-primary" />
+      {/* Key Metrics */}
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-8">
+        <StatCard label="Targets"       value={stats.total_targets}    accent="text-cyan-400" />
+        <StatCard label="Total Scans"   value={stats.total_scans}      accent="text-blue-400" />
+        <StatCard label="Active Scans"  value={stats.active_scans}     accent="text-yellow-400" />
+        <StatCard label="Total Assets"  value={stats.total_assets}     accent="text-purple-400" />
+        <StatCard label="Total Findings" value={stats.total_findings}  accent="text-red-400" />
+        <StatCard label="Critical Vulns" value={stats.critical_findings} accent="text-red-600" />
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-        <StatCard label="Critical" value={stats.critical_findings} accent="text-red-500" />
-        <StatCard label="High"     value={stats.high_findings}     accent="text-orange-400" />
-        <StatCard label="Medium"   value={stats.medium_findings}   accent="text-yellow-400" />
-        <StatCard label="Low"      value={stats.low_findings}      accent="text-green-500" />
+      {/* Severity Breakdown */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+        <div className="bg-bg-secondary border border-border rounded-lg p-5">
+          <h3 className="text-sm font-semibold text-text-secondary uppercase tracking-wider mb-4">
+            Findings by Severity
+          </h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <PieChart>
+              <Pie
+                data={severityChart}
+                dataKey="value"
+                nameKey="name"
+                cx="50%"
+                cy="50%"
+                outerRadius={60}
+                label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+              >
+                {severityChart.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={entry.color} />
+                ))}
+              </Pie>
+              <Tooltip />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="bg-bg-secondary border border-border rounded-lg p-5">
+          <h3 className="text-sm font-semibold text-text-secondary uppercase tracking-wider mb-4">
+            Top Categories
+          </h3>
+          <div className="space-y-3">
+            {topCategories.map(([category, count]) => (
+              <div key={category} className="flex justify-between items-center">
+                <span className="text-sm text-text-primary capitalize">{category}</span>
+                <span className="text-sm font-mono text-accent">{count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Recent Scans */}
+        {/* Active Scans Monitor */}
         <div className="bg-bg-secondary border border-border rounded-lg p-5">
           <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider mb-4">
-            Recent Scans
+            Active Scan Monitor
           </h2>
-          {stats.recent_scans.length === 0 ? (
-            <p className="text-text-muted text-sm">No scans yet.</p>
+          {stats.recent_scans.filter(s => s.status === 'running').length === 0 ? (
+            <p className="text-text-muted text-sm">No active scans.</p>
           ) : (
-            <div className="flex flex-col gap-3">
-              {stats.recent_scans.map(scan => (
-                <Link
-                  key={scan.id}
-                  href={`/scans/${scan.id}`}
-                  className="p-3 rounded-md bg-bg-tertiary hover:border-accent border border-transparent transition-colors"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="font-mono text-xs text-text-primary">{scan.id.slice(0, 12)}...</p>
-                      <p className="text-xs text-text-secondary mt-0.5">
-                        {formatDistanceToNow(new Date(scan.created_at), { addSuffix: true })}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-xs text-text-secondary">{scan.assets_found} assets</span>
-                      <span className="text-xs text-text-secondary">{scan.findings_count} findings</span>
+            <div className="flex flex-col gap-4">
+              {stats.recent_scans.filter(s => s.status === 'running').map(scan => {
+                const progress = getScanProgress(scan);
+                return (
+                  <Link
+                    key={scan.id}
+                    href={`/scans/${scan.id}`}
+                    className="p-4 rounded-md bg-bg-tertiary hover:border-accent border border-transparent transition-colors"
+                  >
+                    <div className="flex items-center justify-between gap-3 mb-2">
+                      <div>
+                        <p className="font-mono text-xs text-text-primary">{scan.id.slice(0, 12)}...</p>
+                        <p className="text-xs text-text-secondary mt-0.5">
+                          {formatDistanceToNow(new Date(scan.created_at), { addSuffix: true })}
+                        </p>
+                      </div>
                       <StatusBadge status={scan.status} />
                     </div>
-                  </div>
 
-                  <div className="mt-3">
-                    <div className="flex justify-between text-xs mb-1">
-                      <span className="text-text-secondary capitalize">{formatStepName(scan.current_step)}</span>
-                      <span className="text-text-secondary">
-                        {scan.steps_completed}/{scan.steps_total || 0} ({getScanProgress(scan)}%)
-                      </span>
+                    <div className="mb-2">
+                      <div className="flex justify-between text-xs mb-1">
+                        <span className="text-text-secondary capitalize">{formatStepName(scan.current_step)}</span>
+                        <span className="text-text-secondary">{progress}%</span>
+                      </div>
+                      <div className="w-full bg-bg-primary rounded-full h-2">
+                        <div
+                          className="bg-accent h-2 rounded-full transition-all duration-300"
+                          style={{ width: `${progress}%` }}
+                        />
+                      </div>
                     </div>
-                    <div className="w-full bg-bg-primary rounded-full h-2">
-                      <div
-                        className="bg-blue-400 h-2 rounded-full transition-all"
-                        style={{ width: `${getScanProgress(scan)}%` }}
-                      />
-                    </div>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
 
-        {/* Top Categories */}
-        <div className="bg-bg-secondary border border-border rounded-lg p-5">
-          <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider mb-4">
-            Top Finding Categories
-          </h2>
-          {topCategories.length === 0 ? (
-            <p className="text-text-muted text-sm">No findings yet.</p>
-          ) : (
-            <div className="flex flex-col gap-3">
-              {topCategories.map(([cat, count]) => {
-                const maxCount = topCategories[0][1];
-                const pct = Math.round((count / maxCount) * 100);
-                return (
-                  <div key={cat}>
-                    <div className="flex justify-between text-xs mb-1">
-                      <span className="text-text-primary font-mono uppercase">{cat}</span>
-                      <span className="text-text-secondary">{count}</span>
+                    <div className="flex justify-between text-xs text-text-secondary">
+                      <span>Assets: {scan.assets_found}</span>
+                      <span>Findings: {scan.findings_count}</span>
                     </div>
-                    <div className="w-full bg-bg-tertiary rounded-full h-2">
-                      <div className="bg-accent h-2 rounded-full" style={{ width: `${pct}%` }} />
-                    </div>
-                  </div>
+                  </Link>
                 );
               })}
             </div>
           )}
         </div>
-      </div>
 
-      <div className="mt-6 bg-bg-secondary border border-border rounded-lg p-5">
-        <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider mb-4">
-          Severity Distribution
-        </h2>
-        <div className="h-64">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={severityChart}>
-              <XAxis dataKey="name" stroke="#94a3b8" />
-              <YAxis stroke="#94a3b8" />
-              <Tooltip />
-              <Bar dataKey="value" fill="#22d3ee" />
-            </BarChart>
-          </ResponsiveContainer>
+        {/* Recent Findings */}
+        <div className="bg-bg-secondary border border-border rounded-lg p-5">
+          <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider mb-4">
+            Recent Critical Findings
+          </h2>
+          {stats.recent_scans.length === 0 ? (
+            <p className="text-text-muted text-sm">No recent findings.</p>
+          ) : (
+            <div className="space-y-3">
+              {/* This would need to be added to the API response */}
+              <p className="text-text-muted text-sm">Feature coming soon...</p>
+            </div>
+          )}
         </div>
       </div>
     </Layout>
