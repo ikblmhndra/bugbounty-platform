@@ -1,33 +1,7 @@
-"""
-SQLAlchemy ORM models for the bug bounty platform.
-
-Models:
-    Target      - Scoped domain/target
-    Scan        - Scan run instance
-    Asset       - Discovered subdomains, URLs, endpoints
-    Finding     - Vulnerability or misconfiguration finding
-    AttackPath  - Correlated chain of findings
-    AttackPathNode - Individual step in an attack path
-    Log         - Scan activity log entries
-"""
 import enum
 import uuid
-from datetime import datetime
 
-from sqlalchemy import (
-    Boolean,
-    Column,
-    DateTime,
-    Enum,
-    Float,
-    ForeignKey,
-    Index,
-    Integer,
-    String,
-    Text,
-    UniqueConstraint,
-    func,
-)
+from sqlalchemy import Boolean, Column, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
@@ -46,11 +20,29 @@ class ScanStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class ScanStageType(str, enum.Enum):
+    RECON = "recon"
+    ENUMERATION = "enumeration"
+    PROBING = "probing"
+    SCANNING = "scanning"
+    VALIDATION = "validation"
+    REPORTING = "reporting"
+
+
+class StageStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
 class AssetType(str, enum.Enum):
+    DOMAIN = "domain"
     SUBDOMAIN = "subdomain"
+    IP = "ip"
     URL = "url"
     ENDPOINT = "endpoint"
-    IP = "ip"
 
 
 class FindingSeverity(str, enum.Enum):
@@ -64,17 +56,20 @@ class FindingSeverity(str, enum.Enum):
 class FindingCategory(str, enum.Enum):
     XSS = "xss"
     SQLI = "sqli"
-    LFI = "lfi"
+    MISCONFIG = "misconfig"
+    EXPOSURE = "exposure"
     SSRF = "ssrf"
-    MISCONFIGURATION = "misconfiguration"
-    SENSITIVE_DATA = "sensitive_data"
     RCE = "rce"
     IDOR = "idor"
-    OPEN_REDIRECT = "open_redirect"
-    CSRF = "csrf"
-    XXE = "xxe"
-    SSTI = "ssti"
     OTHER = "other"
+
+
+class FindingStatus(str, enum.Enum):
+    OPEN = "open"
+    CONFIRMED = "confirmed"
+    FALSE_POSITIVE = "false_positive"
+    ACCEPTED_RISK = "accepted_risk"
+    FIXED = "fixed"
 
 
 class Target(Base):
@@ -90,6 +85,7 @@ class Target(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     scans = relationship("Scan", back_populates="target", cascade="all, delete-orphan")
+    assets = relationship("Asset", back_populates="target", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<Target {self.domain}>"
@@ -103,10 +99,9 @@ class Scan(Base):
     status = Column(Enum(ScanStatus), default=ScanStatus.PENDING, nullable=False, index=True)
     celery_task_id = Column(String(255), nullable=True, index=True)
 
-    # Pipeline step tracking
-    steps_total = Column(Integer, default=0)
+    steps_total = Column(Integer, default=6)
     steps_completed = Column(Integer, default=0)
-    current_step = Column(String(100), nullable=True)
+    current_step = Column(String(100), nullable=True, index=True)
 
     # Scan options
     options = Column(JSONB, default=dict)  # e.g. {"run_ffuf": true, "nuclei_severity": "high,critical"}
@@ -123,7 +118,9 @@ class Scan(Base):
     target = relationship("Target", back_populates="scans")
     assets = relationship("Asset", back_populates="scan", cascade="all, delete-orphan")
     findings = relationship("Finding", back_populates="scan", cascade="all, delete-orphan")
-    attack_paths = relationship("AttackPath", back_populates="scan", cascade="all, delete-orphan")
+    stages = relationship("ScanStage", back_populates="scan", cascade="all, delete-orphan")
+    asset_diffs = relationship("AssetSnapshotDiff", back_populates="scan", cascade="all, delete-orphan")
+    finding_diffs = relationship("FindingSnapshotDiff", back_populates="scan", cascade="all, delete-orphan")
     logs = relationship("Log", back_populates="scan", cascade="all, delete-orphan")
 
     __table_args__ = (
@@ -138,9 +135,15 @@ class Asset(Base):
     __tablename__ = "assets"
 
     id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    target_id = Column(UUID(as_uuid=False), ForeignKey("targets.id", ondelete="CASCADE"), nullable=False, index=True)
     scan_id = Column(UUID(as_uuid=False), ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
     asset_type = Column(Enum(AssetType), nullable=False, index=True)
     value = Column(String(2048), nullable=False)
+    normalized_key = Column(String(2048), nullable=False, index=True)
+    parent_asset_id = Column(UUID(as_uuid=False), ForeignKey("assets.id", ondelete="SET NULL"), nullable=True, index=True)
+    in_scope = Column(Boolean, nullable=False, default=True, index=True)
+    source = Column(String(120), nullable=True)
+    raw_data = Column(JSONB, default=dict)
 
     # For subdomains / IPs
     ip_address = Column(String(45), nullable=True)
@@ -152,10 +155,13 @@ class Asset(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+    target = relationship("Target", back_populates="assets")
     scan = relationship("Scan", back_populates="assets")
+    parent_asset = relationship("Asset", remote_side=[id], uselist=False)
+    findings = relationship("Finding", back_populates="asset")
 
     __table_args__ = (
-        UniqueConstraint("scan_id", "value", name="uq_asset_scan_value"),
+        UniqueConstraint("scan_id", "normalized_key", name="uq_asset_scan_normalized"),
         Index("ix_assets_scan_type", "scan_id", "asset_type"),
     )
 
@@ -168,12 +174,18 @@ class Finding(Base):
 
     id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
     scan_id = Column(UUID(as_uuid=False), ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    target_id = Column(UUID(as_uuid=False), ForeignKey("targets.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(UUID(as_uuid=False), ForeignKey("assets.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # Classification
     category = Column(Enum(FindingCategory), nullable=False)
     severity = Column(Enum(FindingSeverity), nullable=False, index=True)
+    status = Column(Enum(FindingStatus), nullable=False, default=FindingStatus.OPEN, index=True)
     title = Column(String(512), nullable=False)
     description = Column(Text, nullable=True)
+    tags = Column(JSONB, default=list)
+    vuln_fingerprint = Column(String(512), nullable=False, index=True)
+    endpoint_signature = Column(String(2048), nullable=False, index=True)
 
     # Location
     url = Column(String(2048), nullable=True)
@@ -183,11 +195,15 @@ class Finding(Base):
     # Evidence
     request_snippet = Column(Text, nullable=True)
     response_snippet = Column(Text, nullable=True)
-    evidence = Column(JSONB, default=dict)   # raw tool output / match data
+    evidence = Column(JSONB, default=dict)
 
     # Source tool
     source_tool = Column(String(100), nullable=True)
-    template_id = Column(String(255), nullable=True)   # nuclei template ID
+    template_id = Column(String(255), nullable=True)
+    cvss_base_score = Column(Float, nullable=False, default=0.0)
+    exploitability_score = Column(Float, nullable=False, default=0.0)
+    weighted_score = Column(Float, nullable=False, default=0.0, index=True)
+    confidence = Column(Float, nullable=False, default=0.5)
 
     # Analyst workflow
     is_validated = Column(Boolean, default=False)
@@ -197,9 +213,11 @@ class Finding(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     scan = relationship("Scan", back_populates="findings")
-    attack_path_nodes = relationship("AttackPathNode", back_populates="finding")
+    asset = relationship("Asset", back_populates="findings")
+    evidences = relationship("Evidence", back_populates="finding", cascade="all, delete-orphan")
 
     __table_args__ = (
+        UniqueConstraint("target_id", "vuln_fingerprint", "endpoint_signature", name="uq_finding_dedup"),
         Index("ix_findings_scan_severity", "scan_id", "severity"),
         Index("ix_findings_category", "category"),
     )
@@ -208,46 +226,64 @@ class Finding(Base):
         return f"<Finding [{self.severity.value}] {self.title}>"
 
 
-class AttackPath(Base):
-    __tablename__ = "attack_paths"
+class ScanStage(Base):
+    __tablename__ = "scan_stages"
 
     id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
     scan_id = Column(UUID(as_uuid=False), ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    stage_type = Column(Enum(ScanStageType), nullable=False, index=True)
+    status = Column(Enum(StageStatus), nullable=False, default=StageStatus.PENDING, index=True)
+    attempt = Column(Integer, nullable=False, default=0)
+    max_retries = Column(Integer, nullable=False, default=2)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    error_message = Column(Text, nullable=True)
+    stage_data = Column(JSONB, default=dict)
 
-    title = Column(String(512), nullable=False)
-    description = Column(Text, nullable=False)
-    confidence = Column(Float, nullable=False, default=0.5)   # 0.0 - 1.0
-    impact = Column(String(255), nullable=True)
+    scan = relationship("Scan", back_populates="stages")
 
-    # Pre-computed steps for analyst presentation
-    steps = Column(JSONB, default=list)   # list of human-readable step strings
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    scan = relationship("Scan", back_populates="attack_paths")
-    nodes = relationship("AttackPathNode", back_populates="attack_path", cascade="all, delete-orphan", order_by="AttackPathNode.order")
-
-    def __repr__(self) -> str:
-        return f"<AttackPath {self.title} confidence={self.confidence}>"
+    __table_args__ = (
+        UniqueConstraint("scan_id", "stage_type", name="uq_scan_stage"),
+    )
 
 
-class AttackPathNode(Base):
-    __tablename__ = "attack_path_nodes"
+class Evidence(Base):
+    __tablename__ = "evidences"
 
     id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
-    attack_path_id = Column(UUID(as_uuid=False), ForeignKey("attack_paths.id", ondelete="CASCADE"), nullable=False, index=True)
-    finding_id = Column(UUID(as_uuid=False), ForeignKey("findings.id", ondelete="SET NULL"), nullable=True, index=True)
+    finding_id = Column(UUID(as_uuid=False), ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, index=True)
+    evidence_type = Column(String(64), nullable=False, index=True)
+    storage_path = Column(String(1024), nullable=True)
+    content = Column(JSONB, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    order = Column(Integer, nullable=False)
-    label = Column(String(255), nullable=False)
-    description = Column(Text, nullable=True)
-    validation_command = Column(Text, nullable=True)   # Suggested manual command
+    finding = relationship("Finding", back_populates="evidences")
 
-    attack_path = relationship("AttackPath", back_populates="nodes")
-    finding = relationship("Finding", back_populates="attack_path_nodes")
 
-    def __repr__(self) -> str:
-        return f"<AttackPathNode order={self.order} {self.label}>"
+class AssetSnapshotDiff(Base):
+    __tablename__ = "asset_snapshot_diffs"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    scan_id = Column(UUID(as_uuid=False), ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    added = Column(JSONB, default=list)
+    removed = Column(JSONB, default=list)
+    unchanged_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    scan = relationship("Scan", back_populates="asset_diffs")
+
+
+class FindingSnapshotDiff(Base):
+    __tablename__ = "finding_snapshot_diffs"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    scan_id = Column(UUID(as_uuid=False), ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    new_fingerprints = Column(JSONB, default=list)
+    resolved_fingerprints = Column(JSONB, default=list)
+    unchanged_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    scan = relationship("Scan", back_populates="finding_diffs")
 
 
 class Log(Base):

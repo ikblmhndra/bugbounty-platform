@@ -12,6 +12,7 @@ export const api = axios.create({
 
 export type ScanStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
+export type FindingStatus = "open" | "confirmed" | "false_positive" | "accepted_risk" | "fixed";
 export type FindingCategory =
   | "xss" | "sqli" | "lfi" | "ssrf" | "rce" | "idor"
   | "open_redirect" | "csrf" | "xxe" | "ssti"
@@ -39,11 +40,24 @@ export interface Scan {
   completed_at?: string;
 }
 
+export interface ScanStage {
+  id: string;
+  scan_id: string;
+  stage_type: "recon" | "enumeration" | "probing" | "scanning" | "validation" | "reporting";
+  status: "pending" | "running" | "completed" | "failed" | "skipped";
+  attempt: number;
+  max_retries: number;
+  started_at?: string;
+  completed_at?: string;
+  error_message?: string;
+}
+
 export interface Finding {
   id: string;
   scan_id: string;
   category: FindingCategory;
   severity: Severity;
+  status?: FindingStatus;
   title: string;
   description?: string;
   url?: string;
@@ -53,26 +67,6 @@ export interface Finding {
   is_validated: boolean;
   analyst_notes?: string;
   false_positive: boolean;
-  created_at: string;
-}
-
-export interface AttackPathNode {
-  id: string;
-  order: number;
-  label: string;
-  description?: string;
-  validation_command?: string;
-}
-
-export interface AttackPath {
-  id: string;
-  scan_id: string;
-  title: string;
-  description: string;
-  confidence: number;
-  impact?: string;
-  steps: string[];
-  nodes: AttackPathNode[];
   created_at: string;
 }
 
@@ -99,6 +93,8 @@ export interface DashboardStats {
   medium_findings: number;
   low_findings: number;
   findings_by_category: Record<string, number>;
+  findings_by_severity: Record<string, number>;
+  findings_trend: Array<Record<string, any>>;
   recent_scans: Scan[];
 }
 
@@ -123,6 +119,8 @@ export const apiClient = {
   cancelScan: (id: string) => api.delete(`/scans/${id}`),
   getScanLogs: (id: string) =>
     api.get<any[]>(`/scans/${id}/logs`).then(r => r.data),
+  getScanStages: (id: string) =>
+    api.get<ScanStage[]>(`/scans/${id}/stages`).then(r => r.data),
 
   // Findings
   getFindings: (params?: Record<string, any>) =>
@@ -133,15 +131,7 @@ export const apiClient = {
   getValidationCommands: (id: string) =>
     api.get(`/findings/${id}/validate`).then(r => r.data),
 
-  // Attack Paths
-  getPaths: (params?: Record<string, any>) =>
-    api.get<AttackPath[]>("/paths", { params }).then(r => r.data),
-
   // Assets
   getAssets: (params?: Record<string, any>) =>
     api.get<Asset[]>("/assets", { params }).then(r => r.data),
-
-  // Reports
-  getReport: (scanId: string, fmt: "json" | "markdown" | "html" = "json") =>
-    api.get(`/reports/${scanId}?fmt=${fmt}`).then(r => r.data),
 };

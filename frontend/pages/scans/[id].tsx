@@ -1,15 +1,11 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
-import Link from "next/link";
 import Layout from "../../components/Layout";
-import {
-  SectionHeader, StatusBadge, SeverityBadge, ProgressBar,
-  Table, Td, Spinner, EmptyState, CodeBlock,
-} from "../../components/ui";
-import { apiClient, Scan, Finding, AttackPath } from "../../lib/api";
+import { StatusBadge, SeverityBadge, ProgressBar, Spinner, EmptyState, CodeBlock } from "../../components/ui";
+import { apiClient, Scan, Finding, ScanStage } from "../../lib/api";
 import { formatDistanceToNow } from "date-fns";
 
-type Tab = "overview" | "findings" | "paths" | "logs";
+type Tab = "overview" | "findings" | "stages" | "logs";
 
 export default function ScanDetail() {
   const router = useRouter();
@@ -17,7 +13,7 @@ export default function ScanDetail() {
   const [tab, setTab] = useState<Tab>("overview");
   const [scan, setScan] = useState<Scan | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
-  const [paths, setPaths] = useState<AttackPath[]>([]);
+  const [stages, setStages] = useState<ScanStage[]>([]);
   const [logs, setLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -25,13 +21,13 @@ export default function ScanDetail() {
     if (!id) return;
     const load = async () => {
       try {
-        const [s, f, p, l] = await Promise.all([
+        const [s, f, stageRows, l] = await Promise.all([
           apiClient.getScan(id),
           apiClient.getFindings({ scan_id: id, limit: 200 }),
-          apiClient.getPaths({ scan_id: id }),
+          apiClient.getScanStages(id),
           apiClient.getScanLogs(id),
         ]);
-        setScan(s); setFindings(f); setPaths(p); setLogs(l);
+        setScan(s); setFindings(f); setStages(stageRows); setLogs(l);
       } finally {
         setLoading(false);
       }
@@ -44,7 +40,7 @@ export default function ScanDetail() {
     return () => clearInterval(interval);
   }, [id, scan?.status]);
 
-  const TABS: Tab[] = ["overview", "findings", "paths", "logs"];
+  const TABS: Tab[] = ["overview", "findings", "stages", "logs"];
 
   if (loading) return <Layout><div className="flex justify-center pt-20"><Spinner size={8} /></div></Layout>;
   if (!scan)   return <Layout><p className="text-red-400">Scan not found</p></Layout>;
@@ -62,22 +58,7 @@ export default function ScanDetail() {
             {scan.completed_at && ` · Completed ${formatDistanceToNow(new Date(scan.completed_at), { addSuffix: true })}`}
           </p>
         </div>
-        <div className="flex gap-2">
-          <Link
-            href={`${process.env.NEXT_PUBLIC_API_URL}/api/v1/reports/${id}?fmt=html`}
-            target="_blank"
-            className="px-4 py-2 text-xs font-medium border border-border rounded-md text-text-secondary hover:text-text-primary hover:border-accent transition-colors"
-          >
-            HTML Report ↗
-          </Link>
-          <Link
-            href={`${process.env.NEXT_PUBLIC_API_URL}/api/v1/reports/${id}?fmt=json`}
-            target="_blank"
-            className="px-4 py-2 text-xs font-medium border border-border rounded-md text-text-secondary hover:text-text-primary hover:border-accent transition-colors"
-          >
-            JSON Report ↗
-          </Link>
-        </div>
+        <div />
       </div>
 
       {/* Progress (if running) */}
@@ -103,7 +84,7 @@ export default function ScanDetail() {
         {[
           { label: "Assets", value: scan.assets_found },
           { label: "Findings", value: scan.findings_count },
-          { label: "Attack Paths", value: paths.length },
+          { label: "Stages", value: stages.length },
           { label: "Logs", value: logs.length },
         ].map(s => (
           <div key={s.label} className="bg-bg-secondary border border-border rounded-lg p-4 text-center">
@@ -134,15 +115,15 @@ export default function ScanDetail() {
       </div>
 
       {/* Tab content */}
-      {tab === "overview" && <OverviewTab scan={scan} findings={findings} paths={paths} />}
+      {tab === "overview" && <OverviewTab findings={findings} />}
       {tab === "findings" && <FindingsTab findings={findings} scanId={id} />}
-      {tab === "paths"    && <PathsTab paths={paths} />}
+      {tab === "stages"    && <StagesTab stages={stages} />}
       {tab === "logs"     && <LogsTab logs={logs} />}
     </Layout>
   );
 }
 
-function OverviewTab({ scan, findings, paths }: { scan: Scan; findings: Finding[]; paths: AttackPath[] }) {
+function OverviewTab({ findings }: { findings: Finding[] }) {
   const sevCounts = findings.reduce((acc, f) => {
     if (!f.false_positive) acc[f.severity] = (acc[f.severity] || 0) + 1;
     return acc;
@@ -164,19 +145,8 @@ function OverviewTab({ scan, findings, paths }: { scan: Scan; findings: Finding[
         )}
       </div>
       <div className="bg-bg-secondary border border-border rounded-lg p-5">
-        <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-4">Attack Paths</h3>
-        {paths.length === 0 ? (
-          <p className="text-text-muted text-sm">No attack paths identified.</p>
-        ) : (
-          paths.map(p => (
-            <div key={p.id} className="py-2 border-b border-border last:border-0">
-              <p className="text-sm text-text-primary">{p.title}</p>
-              <p className="text-xs text-text-secondary mt-0.5">
-                Confidence: {Math.round(p.confidence * 100)}% · {p.impact}
-              </p>
-            </div>
-          ))
-        )}
+        <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-4">V2 Notes</h3>
+        <p className="text-sm text-text-secondary">Use the Stages tab for state-machine progress and retries.</p>
       </div>
     </div>
   );
@@ -199,7 +169,7 @@ function FindingsTab({ findings, scanId }: { findings: Finding[]; scanId: string
   const saveNotes = async () => {
     if (!selected) return;
     setSaving(true);
-    await apiClient.updateFinding(selected.id, { analyst_notes: notes, is_validated: true });
+    await apiClient.updateFinding(selected.id, { analyst_notes: notes, status: "confirmed" });
     setSaving(false);
   };
 
@@ -284,7 +254,7 @@ function FindingsTab({ findings, scanId }: { findings: Finding[]; scanId: string
                   {saving ? "Saving..." : "Mark Validated"}
                 </button>
                 <button
-                  onClick={() => apiClient.updateFinding(selected.id, { false_positive: true })}
+                  onClick={() => apiClient.updateFinding(selected.id, { false_positive: true, status: "false_positive" })}
                   className="px-3 py-1.5 border border-border text-xs font-medium rounded-md text-text-secondary hover:text-text-primary"
                 >
                   Mark False Positive
@@ -298,43 +268,21 @@ function FindingsTab({ findings, scanId }: { findings: Finding[]; scanId: string
   );
 }
 
-function PathsTab({ paths }: { paths: AttackPath[] }) {
-  if (paths.length === 0) return <EmptyState message="No attack paths identified for this scan." />;
+function StagesTab({ stages }: { stages: ScanStage[] }) {
+  if (stages.length === 0) return <EmptyState message="No stage data recorded for this scan." />;
 
   return (
     <div className="flex flex-col gap-4">
-      {paths.map(p => (
-        <div key={p.id} className="bg-bg-secondary border border-border rounded-lg p-5">
+      {stages.map((s) => (
+        <div key={s.id} className="bg-bg-secondary border border-border rounded-lg p-5">
           <div className="flex items-start justify-between mb-3">
-            <h3 className="text-sm font-semibold text-text-primary">{p.title}</h3>
+            <h3 className="text-sm font-semibold text-text-primary">{s.stage_type}</h3>
             <span className="text-xs text-text-secondary bg-bg-tertiary px-2 py-1 rounded">
-              {Math.round(p.confidence * 100)}% confidence
+              {s.status}
             </span>
           </div>
-          {p.impact && <p className="text-xs text-orange-400 mb-2">Impact: {p.impact}</p>}
-          <p className="text-xs text-text-secondary mb-4">{p.description}</p>
-          <div>
-            <p className="text-xs text-text-muted uppercase tracking-wider mb-2">Steps for analyst review:</p>
-            <ol className="space-y-2">
-              {p.steps.map((step, i) => (
-                <li key={i} className="flex gap-2 text-xs text-text-primary">
-                  <span className="text-accent font-mono">{String(i + 1).padStart(2, "0")}.</span>
-                  <span>{step}</span>
-                </li>
-              ))}
-            </ol>
-          </div>
-          {p.nodes.length > 0 && (
-            <div className="mt-4">
-              <p className="text-xs text-text-muted uppercase tracking-wider mb-2">Validation Commands</p>
-              {p.nodes.filter(n => n.validation_command).map(n => (
-                <div key={n.id} className="mb-3">
-                  <p className="text-xs text-text-secondary mb-1">Step: {n.label}</p>
-                  <CodeBlock code={n.validation_command!} />
-                </div>
-              ))}
-            </div>
-          )}
+          <p className="text-xs text-text-secondary mb-4">Attempt: {s.attempt} / {s.max_retries}</p>
+          {s.error_message && <p className="text-xs text-red-400">{s.error_message}</p>}
         </div>
       ))}
     </div>

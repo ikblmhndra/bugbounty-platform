@@ -74,16 +74,16 @@ _SEVERITY_MAP: dict[str, FindingSeverity] = {
 _CATEGORY_KEYWORDS: list[tuple[list[str], FindingCategory]] = [
     (["xss", "cross-site-scripting", "script-injection"], FindingCategory.XSS),
     (["sqli", "sql-injection", "blind-sql", "time-based-sql"], FindingCategory.SQLI),
-    (["lfi", "local-file", "path-traversal", "directory-traversal"], FindingCategory.LFI),
+    (["lfi", "local-file", "path-traversal", "directory-traversal"], FindingCategory.EXPOSURE),
     (["ssrf", "server-side-request-forgery", "internal-ip"], FindingCategory.SSRF),
     (["rce", "remote-code-execution", "code-injection", "command-injection", "os-injection"], FindingCategory.RCE),
     (["idor", "insecure-direct-object", "broken-access-control"], FindingCategory.IDOR),
-    (["open-redirect", "redirect"], FindingCategory.OPEN_REDIRECT),
-    (["csrf", "cross-site-request-forgery"], FindingCategory.CSRF),
-    (["xxe", "xml-external"], FindingCategory.XXE),
-    (["ssti", "server-side-template"], FindingCategory.SSTI),
-    (["exposed", "disclosure", "sensitive-data", "api-key", "secret", "password", "token", "leak"], FindingCategory.SENSITIVE_DATA),
-    (["misconfig", "misconfiguration", "cors", "csp", "hsts", "clickjacking", "header", "takeover", "s3-bucket"], FindingCategory.MISCONFIGURATION),
+    (["open-redirect", "redirect"], FindingCategory.EXPOSURE),
+    (["csrf", "cross-site-request-forgery"], FindingCategory.OTHER),
+    (["xxe", "xml-external"], FindingCategory.EXPOSURE),
+    (["ssti", "server-side-template"], FindingCategory.RCE),
+    (["exposed", "disclosure", "sensitive-data", "api-key", "secret", "password", "token", "leak"], FindingCategory.EXPOSURE),
+    (["misconfig", "misconfiguration", "cors", "csp", "hsts", "clickjacking", "header", "takeover", "s3-bucket"], FindingCategory.MISCONFIG),
 ]
 
 
@@ -108,7 +108,7 @@ _VALIDATION_COMMANDS: dict[FindingCategory, str] = {
         'sqlmap -u "{url}" --batch --risk=1 --level=1 --output-dir=/tmp/sqlmap_out\n'
         '# Hint: Use --data for POST parameters'
     ),
-    FindingCategory.LFI: (
+    FindingCategory.EXPOSURE: (
         'curl -s "{url}?file=../../../../etc/passwd" | head -20\n'
         'curl -s "{url}?path=....//....//etc/hosts"'
     ),
@@ -121,20 +121,13 @@ _VALIDATION_COMMANDS: dict[FindingCategory, str] = {
         'curl -s "{url}" --data "cmd=id"\n'
         '# Verify with: curl "http://your-interactsh-host.com"'
     ),
-    FindingCategory.SENSITIVE_DATA: (
-        'curl -I "{url}"\n'
-        'curl -s "{url}" | head -50'
-    ),
-    FindingCategory.MISCONFIGURATION: (
+    FindingCategory.MISCONFIG: (
         'curl -I "{url}"\n'
         '# Check response headers carefully'
     ),
     FindingCategory.IDOR: (
         '# Manually test with different object IDs\n'
         'curl -s "{url}" -H "Authorization: Bearer <victim_token>"'
-    ),
-    FindingCategory.OPEN_REDIRECT: (
-        'curl -I "{url}?next=https://evil.com" | grep -i location'
     ),
 }
 
@@ -304,7 +297,7 @@ def analyze_finding_relationships(
     if FindingCategory.SQLI in by_category:
         sqli_findings = by_category[FindingCategory.SQLI]
         sample = sqli_findings[0]
-        has_sensitive = FindingCategory.SENSITIVE_DATA in by_category
+        has_sensitive = FindingCategory.EXPOSURE in by_category
         confidence = 0.80 if has_sensitive else 0.60
 
         path = AnalyzedAttackPath(
@@ -343,8 +336,8 @@ def analyze_finding_relationships(
         paths.append(path)
 
     # Pattern 4: LFI → Configuration Exposure
-    if FindingCategory.LFI in by_category:
-        lfi_findings = by_category[FindingCategory.LFI]
+    if FindingCategory.EXPOSURE in by_category:
+        lfi_findings = by_category[FindingCategory.EXPOSURE]
         sample = lfi_findings[0]
         path = AnalyzedAttackPath(
             title="LFI → Configuration File Exposure → Credential Access",
@@ -366,7 +359,7 @@ def analyze_finding_relationships(
                     label="LFI Confirmation",
                     description="Read /etc/passwd to confirm file read",
                     finding_ref=sample,
-                    validation_command=get_validation_command(FindingCategory.LFI, sample.url),
+                    validation_command=get_validation_command(FindingCategory.EXPOSURE, sample.url),
                 ),
                 AttackPathStep(
                     label="Config File Read",
@@ -381,7 +374,7 @@ def analyze_finding_relationships(
         paths.append(path)
 
     # Pattern 5: Misconfiguration Chain
-    misconfigs = by_category.get(FindingCategory.MISCONFIGURATION, [])
+    misconfigs = by_category.get(FindingCategory.MISCONFIG, [])
     if len(misconfigs) >= 3:
         path = AnalyzedAttackPath(
             title="Misconfiguration Cluster → Elevated Attack Surface",

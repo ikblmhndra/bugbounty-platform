@@ -15,12 +15,12 @@ from app.api.findings import router as findings_router
 from app.api.misc import (
     assets_router,
     dashboard_router,
-    paths_router,
-    reports_router,
 )
 from app.api.scans import router as scans_router
 from app.api.targets import router as targets_router
+from app.api.ws import router as ws_router
 from app.config import get_settings
+from app.services.metrics import metrics_store
 from app.utils.database import init_db
 from app.utils.logging import get_logger, setup_logging
 
@@ -74,20 +74,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def metrics_middleware(request, call_next):
+    metrics_store.inc("http_requests_total")
+    response = await call_next(request)
+    metrics_store.inc(f"http_status_{response.status_code}")
+    return response
+
 # ─── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(targets_router, prefix="/api/v1")
 app.include_router(scans_router, prefix="/api/v1")
 app.include_router(findings_router, prefix="/api/v1")
-app.include_router(paths_router, prefix="/api/v1")
 app.include_router(assets_router, prefix="/api/v1")
 app.include_router(dashboard_router, prefix="/api/v1")
-app.include_router(reports_router, prefix="/api/v1")
+app.include_router(ws_router)
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────
 @app.get("/health", tags=["system"])
 async def health():
     return {"status": "ok", "version": "1.0.0"}
+
+
+@app.get("/metrics", tags=["system"])
+async def metrics():
+    return metrics_store.snapshot()
 
 
 # ─── Global Exception Handler ─────────────────────────────────────────────────

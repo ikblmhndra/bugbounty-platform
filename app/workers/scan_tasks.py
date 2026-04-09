@@ -1,50 +1,22 @@
-"""
-Celery Scan Tasks
-=================
-Orchestrates the full recon pipeline for a given scan ID.
-Pulls jobs from the queue, executes modular recon steps,
-persists results incrementally, and handles failures gracefully.
-"""
-import os
+import asyncio
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional
 
 from celery import Task
 from celery.utils.log import get_task_logger
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
-from app.models.models import (
-    Asset,
-    AssetType,
-    AttackPath,
-    AttackPathNode,
-    Finding,
-    FindingCategory,
-    FindingSeverity,
-    Log,
-    Scan,
-    ScanStatus,
-    Target,
-)
-from app.services.analysis_service import (
-    analyze_finding_relationships,
-    normalize_nuclei_findings,
-)
-from app.services.recon_service import (
-    collect_urls,
-    fuzz_endpoints,
-    probe_alive,
-    scan_vulnerabilities,
-    subdomain_enum,
-    take_screenshots,
-)
+from app.models.models import Asset, AssetType, Evidence, Finding, FindingCategory, FindingSeverity, FindingStatus, Log, Scan, ScanStage, ScanStageType, ScanStatus, StageStatus, Target
+from app.orchestration.controls import acquire_target_lock
+from app.orchestration.state_machine import STAGE_ORDER
+from app.plugins import build_default_registry
+from app.services.analysis_service import normalize_nuclei_findings
+from app.services.finding_engine import dedup_fingerprint, endpoint_signature, score_finding, tags_for_category
+from app.services.normalization import in_scope, normalize_asset
 from app.utils.database import get_sync_db
 from app.workers.celery_app import celery_app
 
 logger = get_task_logger(__name__)
-settings = get_settings()
+registry = build_default_registry()
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -69,21 +41,28 @@ def _update_scan(db: Session, scan: Scan, **kwargs) -> None:
     db.commit()
 
 
-def _advance_step(db: Session, scan: Scan, step_name: str) -> None:
-    """Increment the step counter and update current_step."""
-    scan.steps_completed += 1
+def _advance_step(scan: Scan, step_name: str) -> None:
+    scan.steps_completed = min((scan.steps_completed or 0) + 1, scan.steps_total or 6)
     scan.current_step = step_name
-    db.commit()
 
 
-def _upsert_asset(db: Session, scan_id: str, asset_type: AssetType, value: str, **kwargs) -> Asset:
-    """Insert asset if it doesn't already exist for this scan."""
-    existing = db.query(Asset).filter_by(scan_id=scan_id, value=value).first()
+def _upsert_asset(db, target: Target, scan: Scan, asset_type: AssetType, value: str, source: str, raw_data: dict | None = None, **kwargs) -> Asset:
+    key = normalize_asset(asset_type, value)
+    existing = db.query(Asset).filter_by(scan_id=scan.id, normalized_key=key).first()
     if existing:
         return existing
-    asset = Asset(scan_id=scan_id, asset_type=asset_type, value=value, **kwargs)
+    asset = Asset(
+        target_id=target.id,
+        scan_id=scan.id,
+        asset_type=asset_type,
+        value=value,
+        normalized_key=key,
+        in_scope=in_scope(value, target.scope_include or [], target.scope_exclude or []),
+        source=source,
+        raw_data=raw_data or {},
+        **kwargs,
+    )
     db.add(asset)
-    db.commit()
     return asset
 
 
@@ -107,317 +86,177 @@ class ScanTask(Task):
                     _log(db, scan_id, f"Scan failed: {exc}", level="error")
 
 
-@celery_app.task(bind=True, base=ScanTask, name="app.workers.scan_tasks.run_scan", max_retries=1)
+@celery_app.task(bind=True, base=ScanTask, name="app.workers.scan_tasks.run_scan", max_retries=2)
 def run_scan(self, scan_id: str) -> dict:
-    """
-    Main scan task. Executes the full recon pipeline for a scan.
-
-    Pipeline:
-        1. Subdomain enumeration
-        2. Probe alive hosts
-        3. Collect URLs
-        4. Screenshot alive hosts
-        5. Fuzz endpoints (optional)
-        6. Nuclei vulnerability scan
-        7. Normalize + analyze findings
-        8. Persist attack paths
-
-    Args:
-        scan_id: UUID of the Scan record to execute.
-
-    Returns:
-        Summary dict with counts.
-    """
-    logger.info(f"Starting scan {scan_id}")
+    logger.info("Starting scan %s", scan_id)
 
     with get_sync_db() as db:
         scan = db.query(Scan).filter_by(id=scan_id).first()
         if not scan:
             raise ValueError(f"Scan {scan_id} not found")
-
         target = db.query(Target).filter_by(id=scan.target_id).first()
         if not target:
             raise ValueError(f"Target for scan {scan_id} not found")
+        lock = acquire_target_lock(target.id)
 
-        options = scan.options or {}
-        domain = target.domain
-        run_ffuf = options.get("run_ffuf", False)
-        run_gowitness = options.get("run_gowitness", True)
-        nuclei_severity = options.get("nuclei_severity", settings.nuclei_severity)
-        ffuf_wordlist = options.get("ffuf_wordlist", settings.ffuf_wordlist)
-
-        total_steps = 6 + (1 if run_ffuf else 0) + (1 if run_gowitness else 0)
-        _update_scan(
-            db, scan,
-            status=ScanStatus.RUNNING,
-            started_at=datetime.now(timezone.utc),
-            steps_total=total_steps,
-            steps_completed=0,
-            current_step="starting",
-        )
-        _log(db, scan_id, f"Scan started for domain: {domain}", step="init")
-
-    # ── Step 1: Subdomain Enumeration ────────────────────────────────────────
-    try:
+    runtime = {}
+    with lock:
         with get_sync_db() as db:
             scan = db.query(Scan).filter_by(id=scan_id).first()
-            _advance_step(db, scan, "subdomain_enum")
-            _log(db, scan_id, "Starting subdomain enumeration", step="subdomain_enum")
-
-        subdomain_results = subdomain_enum(domain)
-        subdomains = [r.subdomain for r in subdomain_results]
-
-        with get_sync_db() as db:
-            scan = db.query(Scan).filter_by(id=scan_id).first()
-            for r in subdomain_results:
-                _upsert_asset(db, scan_id, AssetType.SUBDOMAIN, r.subdomain)
-            _log(db, scan_id, f"Found {len(subdomains)} subdomains", step="subdomain_enum",
-                 details={"count": len(subdomains)})
-
-    except Exception as e:
-        logger.error(f"Subdomain enum failed: {e}")
-        with get_sync_db() as db:
-            _log(db, scan_id, f"Subdomain enum error: {e}", level="warning", step="subdomain_enum")
-        subdomains = [domain]
-
-    # ── Step 2: Probe Alive ───────────────────────────────────────────────────
-    try:
-        with get_sync_db() as db:
-            scan = db.query(Scan).filter_by(id=scan_id).first()
-            _advance_step(db, scan, "probe_alive")
-            _log(db, scan_id, f"Probing {len(subdomains)} hosts", step="probe_alive")
-
-        probe_results = probe_alive(subdomains)
-        alive_urls = [p.url for p in probe_results if p.is_alive]
-
-        with get_sync_db() as db:
-            scan = db.query(Scan).filter_by(id=scan_id).first()
-            for pr in probe_results:
-                if pr.is_alive:
-                    _upsert_asset(
-                        db, scan_id, AssetType.URL, pr.url,
-                        ip_address=pr.ip,
-                        is_alive=True,
-                        status_code=pr.status_code,
-                        technologies=pr.technologies,
-                        headers=pr.headers,
-                    )
-            scan.assets_found = db.query(Asset).filter_by(scan_id=scan_id).count()
+            _update_scan(db, scan, status=ScanStatus.RUNNING, started_at=datetime.now(timezone.utc), steps_total=len(STAGE_ORDER), steps_completed=0, current_step=STAGE_ORDER[0].value)
+            for stage in STAGE_ORDER:
+                db.add(ScanStage(scan_id=scan.id, stage_type=stage, status=StageStatus.PENDING, max_retries=2))
             db.commit()
-            _log(db, scan_id, f"{len(alive_urls)} alive hosts found", step="probe_alive",
-                 details={"alive": len(alive_urls)})
 
-    except Exception as e:
-        logger.error(f"Probe alive failed: {e}")
-        with get_sync_db() as db:
-            _log(db, scan_id, f"Probe alive error: {e}", level="warning", step="probe_alive")
-        alive_urls = [f"https://{domain}"]
+        for stage in STAGE_ORDER:
+            for attempt in range(0, 3):
+                with get_sync_db() as db:
+                    scan = db.query(Scan).filter_by(id=scan_id).first()
+                    target = db.query(Target).filter_by(id=scan.target_id).first()
+                    stage_row = db.query(ScanStage).filter_by(scan_id=scan.id, stage_type=stage).first()
+                    stage_row.status = StageStatus.RUNNING
+                    stage_row.started_at = datetime.now(timezone.utc)
+                    stage_row.attempt = attempt
+                    _advance_step(scan, stage.value)
+                    _log(db, scan_id, f"Stage started: {stage.value}", step=stage.value)
+                    db.commit()
+                try:
+                    if stage == ScanStageType.RECON:
+                        runtime["recon"] = {"target": target.domain}
+                    elif stage == ScanStageType.ENUMERATION:
+                        out = asyncio.run(registry.get("subdomain").run(type("ctx", (), {"target_domain": target.domain, "options": scan.options or {}, "previous": runtime})()))
+                        runtime.update(out)
+                        with get_sync_db() as db:
+                            scan = db.query(Scan).filter_by(id=scan_id).first()
+                            target = db.query(Target).filter_by(id=scan.target_id).first()
+                            for item in out.get("subdomains", []):
+                                _upsert_asset(db, target, scan, AssetType.SUBDOMAIN, item, source="subfinder")
+                            db.commit()
+                    elif stage == ScanStageType.PROBING:
+                        out = asyncio.run(registry.get("http_probe").run(type("ctx", (), {"target_domain": target.domain, "options": scan.options or {}, "previous": runtime})()))
+                        runtime.update(out)
+                        with get_sync_db() as db:
+                            scan = db.query(Scan).filter_by(id=scan_id).first()
+                            target = db.query(Target).filter_by(id=scan.target_id).first()
+                            for probe in out.get("raw_probe", []):
+                                if probe.get("is_alive"):
+                                    _upsert_asset(
+                                        db,
+                                        target,
+                                        scan,
+                                        AssetType.URL,
+                                        probe.get("url", ""),
+                                        source="httpx",
+                                        raw_data=probe,
+                                        ip_address=probe.get("ip"),
+                                        is_alive=True,
+                                        status_code=probe.get("status_code"),
+                                        technologies=probe.get("technologies", []),
+                                        headers=probe.get("headers", {}),
+                                    )
+                            scan.assets_found = db.query(Asset).filter_by(scan_id=scan.id).count()
+                            db.commit()
+                    elif stage == ScanStageType.SCANNING:
+                        out = asyncio.run(registry.get("nuclei").run(type("ctx", (), {"target_domain": target.domain, "options": scan.options or {}, "previous": runtime})()))
+                        runtime.update(out)
+                    elif stage == ScanStageType.VALIDATION:
+                        normalized = normalize_nuclei_findings(
+                            [
+                                type(
+                                    "nuclei",
+                                    (),
+                                    {
+                                        "template_id": r.get("template_id", ""),
+                                        "name": r.get("name", ""),
+                                        "severity": r.get("severity", "info"),
+                                        "url": r.get("url", ""),
+                                        "matched_at": r.get("matched_at", ""),
+                                        "description": r.get("description", ""),
+                                        "request": r.get("request", ""),
+                                        "response": r.get("response", ""),
+                                        "raw": r.get("raw", {}),
+                                    },
+                                )()
+                                for r in runtime.get("raw_nuclei", [])
+                            ]
+                        )
+                        with get_sync_db() as db:
+                            scan = db.query(Scan).filter_by(id=scan_id).first()
+                            target = db.query(Target).filter_by(id=scan.target_id).first()
+                            for nf in normalized:
+                                fp = dedup_fingerprint(nf.template_id, nf.title, nf.category)
+                                sig = endpoint_signature(nf.url, nf.method)
+                                existing = db.query(Finding).filter_by(target_id=target.id, vuln_fingerprint=fp, endpoint_signature=sig).first()
+                                if existing:
+                                    continue
+                                base, exp, weighted = score_finding(nf.severity, exploitability=0.7, confidence=0.8)
+                                finding = Finding(
+                                    scan_id=scan.id,
+                                    target_id=target.id,
+                                    category=nf.category if nf.category in list(FindingCategory) else FindingCategory.OTHER,
+                                    severity=nf.severity if nf.severity in list(FindingSeverity) else FindingSeverity.INFO,
+                                    status=FindingStatus.OPEN,
+                                    title=nf.title,
+                                    description=nf.description,
+                                    tags=tags_for_category(nf.category if nf.category in list(FindingCategory) else FindingCategory.OTHER),
+                                    vuln_fingerprint=fp,
+                                    endpoint_signature=sig,
+                                    url=nf.url,
+                                    parameter=nf.parameter,
+                                    method=nf.method,
+                                    request_snippet=nf.request_snippet,
+                                    response_snippet=nf.response_snippet,
+                                    evidence=nf.evidence,
+                                    source_tool=nf.source_tool,
+                                    template_id=nf.template_id,
+                                    cvss_base_score=base,
+                                    exploitability_score=exp,
+                                    weighted_score=weighted,
+                                    confidence=0.8,
+                                )
+                                db.add(finding)
+                                db.flush()
+                                db.add(Evidence(finding_id=finding.id, evidence_type="raw_tool_output", content=nf.evidence))
+                            scan.findings_count = db.query(Finding).filter_by(scan_id=scan.id).count()
+                            db.commit()
+                    elif stage == ScanStageType.REPORTING:
+                        with get_sync_db() as db:
+                            scan = db.query(Scan).filter_by(id=scan_id).first()
+                            scan.assets_found = db.query(Asset).filter_by(scan_id=scan.id).count()
+                            scan.findings_count = db.query(Finding).filter_by(scan_id=scan.id).count()
+                            db.commit()
+                    with get_sync_db() as db:
+                        stage_row = db.query(ScanStage).filter_by(scan_id=scan_id, stage_type=stage).first()
+                        stage_row.status = StageStatus.COMPLETED
+                        stage_row.completed_at = datetime.now(timezone.utc)
+                        db.commit()
+                    break
+                except Exception as exc:
+                    with get_sync_db() as db:
+                        stage_row = db.query(ScanStage).filter_by(scan_id=scan_id, stage_type=stage).first()
+                        stage_row.status = StageStatus.FAILED
+                        stage_row.error_message = str(exc)[:2000]
+                        db.commit()
+                        _log(db, scan_id, f"Stage failed: {stage.value} ({exc})", level="error", step=stage.value)
+                    if attempt >= 2:
+                        raise
 
-    # ── Step 3: Collect URLs ──────────────────────────────────────────────────
-    try:
-        with get_sync_db() as db:
-            scan = db.query(Scan).filter_by(id=scan_id).first()
-            _advance_step(db, scan, "collect_urls")
-            _log(db, scan_id, "Collecting URLs", step="collect_urls")
-
-        url_results = collect_urls(domain, alive_urls)
-        collected_urls = [r.url for r in url_results]
-
-        with get_sync_db() as db:
-            scan = db.query(Scan).filter_by(id=scan_id).first()
-            # Deduplicate and persist (bulk, no upsert loop to save time)
-            existing = {a.value for a in db.query(Asset.value).filter_by(scan_id=scan_id)}
-            new_assets = [
-                Asset(scan_id=scan_id, asset_type=AssetType.URL, value=r.url)
-                for r in url_results if r.url not in existing
-            ]
-            if new_assets:
-                db.bulk_save_objects(new_assets)
-            scan.assets_found = db.query(Asset).filter_by(scan_id=scan_id).count()
-            db.commit()
-            _log(db, scan_id, f"Collected {len(url_results)} URLs", step="collect_urls",
-                 details={"count": len(url_results)})
-
-    except Exception as e:
-        logger.error(f"URL collection failed: {e}")
-        with get_sync_db() as db:
-            _log(db, scan_id, f"URL collection error: {e}", level="warning", step="collect_urls")
-        collected_urls = alive_urls
-
-    # ── Step 4: Screenshots (optional) ───────────────────────────────────────
-    if run_gowitness:
-        try:
-            with get_sync_db() as db:
-                scan = db.query(Scan).filter_by(id=scan_id).first()
-                _advance_step(db, scan, "screenshots")
-                _log(db, scan_id, "Taking screenshots", step="screenshots")
-
-            screenshots_dir = os.path.join(settings.screenshots_dir, scan_id)
-            screenshot_map = take_screenshots(alive_urls[:30], screenshots_dir)
-
-            with get_sync_db() as db:
-                for url, path in screenshot_map.items():
-                    asset = db.query(Asset).filter_by(scan_id=scan_id, value=url).first()
-                    if asset:
-                        asset.screenshot_path = path
-                db.commit()
-                _log(db, scan_id, f"Screenshots captured: {len(screenshot_map)}", step="screenshots")
-
-        except Exception as e:
-            logger.error(f"Screenshots failed: {e}")
-            with get_sync_db() as db:
-                _log(db, scan_id, f"Screenshot error: {e}", level="warning", step="screenshots")
-
-    # ── Step 5: Endpoint Fuzzing (optional) ───────────────────────────────────
-    if run_ffuf:
-        try:
-            with get_sync_db() as db:
-                scan = db.query(Scan).filter_by(id=scan_id).first()
-                _advance_step(db, scan, "fuzz_endpoints")
-                _log(db, scan_id, "Fuzzing endpoints with ffuf", step="fuzz_endpoints")
-
-            fuzz_results = fuzz_endpoints(alive_urls, wordlist=ffuf_wordlist)
-
-            with get_sync_db() as db:
-                scan = db.query(Scan).filter_by(id=scan_id).first()
-                existing = {a.value for a in db.query(Asset.value).filter_by(scan_id=scan_id)}
-                new_eps = [
-                    Asset(scan_id=scan_id, asset_type=AssetType.ENDPOINT,
-                          value=r.url, status_code=r.status_code)
-                    for r in fuzz_results if r.url not in existing
-                ]
-                if new_eps:
-                    db.bulk_save_objects(new_eps)
-                scan.assets_found = db.query(Asset).filter_by(scan_id=scan_id).count()
-                db.commit()
-                _log(db, scan_id, f"Fuzz discovered {len(fuzz_results)} endpoints", step="fuzz_endpoints")
-
-        except Exception as e:
-            logger.error(f"Fuzzing failed: {e}")
-            with get_sync_db() as db:
-                _log(db, scan_id, f"Fuzz error: {e}", level="warning", step="fuzz_endpoints")
-
-    # ── Step 6: Nuclei Vulnerability Scan ────────────────────────────────────
-    nuclei_results = []
-    try:
-        with get_sync_db() as db:
-            scan = db.query(Scan).filter_by(id=scan_id).first()
-            _advance_step(db, scan, "scan_vulnerabilities")
-            _log(db, scan_id, f"Running nuclei (severity: {nuclei_severity})", step="scan_vulnerabilities")
-
-        # Use alive URLs + a sample of collected URLs
-        scan_targets = list(set(alive_urls + collected_urls[:200]))
-        nuclei_results = scan_vulnerabilities(scan_targets, severity=nuclei_severity)
-
-        with get_sync_db() as db:
-            _log(db, scan_id, f"Nuclei found {len(nuclei_results)} potential issues", step="scan_vulnerabilities",
-                 details={"count": len(nuclei_results)})
-
-    except Exception as e:
-        logger.error(f"Nuclei scan failed: {e}")
-        with get_sync_db() as db:
-            _log(db, scan_id, f"Nuclei error: {e}", level="warning", step="scan_vulnerabilities")
-
-    # ── Step 7: Normalize + Persist Findings ─────────────────────────────────
-    try:
-        with get_sync_db() as db:
-            scan = db.query(Scan).filter_by(id=scan_id).first()
-            _advance_step(db, scan, "normalize_findings")
-            _log(db, scan_id, "Normalizing findings", step="normalize_findings")
-
-        normalized = normalize_nuclei_findings(nuclei_results)
-
-        with get_sync_db() as db:
-            scan = db.query(Scan).filter_by(id=scan_id).first()
-            for nf in normalized:
-                finding = Finding(
-                    scan_id=scan_id,
-                    category=nf.category,
-                    severity=nf.severity,
-                    title=nf.title,
-                    description=nf.description,
-                    url=nf.url,
-                    parameter=nf.parameter,
-                    request_snippet=nf.request_snippet,
-                    response_snippet=nf.response_snippet,
-                    evidence=nf.evidence,
-                    source_tool=nf.source_tool,
-                    template_id=nf.template_id,
-                )
-                db.add(finding)
-            scan.findings_count = len(normalized)
-            db.commit()
-            _log(db, scan_id, f"Persisted {len(normalized)} findings", step="normalize_findings")
-
-    except Exception as e:
-        logger.error(f"Finding normalization failed: {e}")
-        with get_sync_db() as db:
-            _log(db, scan_id, f"Normalization error: {e}", level="error", step="normalize_findings")
-        normalized = []
-
-    # ── Step 8: Attack Path Analysis ─────────────────────────────────────────
-    try:
-        with get_sync_db() as db:
-            scan = db.query(Scan).filter_by(id=scan_id).first()
-            _advance_step(db, scan, "attack_path_analysis")
-            _log(db, scan_id, "Analyzing attack paths", step="attack_path_analysis")
-
-        attack_paths = analyze_finding_relationships(normalized)
-
-        with get_sync_db() as db:
-            for ap in attack_paths:
-                db_path = AttackPath(
-                    scan_id=scan_id,
-                    title=ap.title,
-                    description=ap.description,
-                    confidence=ap.confidence,
-                    impact=ap.impact,
-                    steps=ap.steps,
-                )
-                db.add(db_path)
-                db.flush()  # get db_path.id
-
-                for i, node in enumerate(ap.path_nodes):
-                    db_node = AttackPathNode(
-                        attack_path_id=db_path.id,
-                        order=i,
-                        label=node.label,
-                        description=node.description,
-                        validation_command=node.validation_command,
-                    )
-                    db.add(db_node)
-
-            db.commit()
-            _log(db, scan_id, f"Identified {len(attack_paths)} attack paths", step="attack_path_analysis")
-
-    except Exception as e:
-        logger.error(f"Attack path analysis failed: {e}")
-        with get_sync_db() as db:
-            _log(db, scan_id, f"Attack path error: {e}", level="warning", step="attack_path_analysis")
-
-    # ── Finalize ─────────────────────────────────────────────────────────────
-    final_assets = 0
-    final_findings = 0
     with get_sync_db() as db:
         scan = db.query(Scan).filter_by(id=scan_id).first()
-        _update_scan(
-            db, scan,
-            status=ScanStatus.COMPLETED,
-            completed_at=datetime.now(timezone.utc),
-            current_step="completed",
-        )
-        _log(db, scan_id, "Scan completed successfully", step="completed",
-             details={
-                 "assets": scan.assets_found,
-                 "findings": scan.findings_count,
-             })
+        _update_scan(db, scan, status=ScanStatus.COMPLETED, completed_at=datetime.now(timezone.utc), current_step="completed")
+        _log(db, scan_id, "Scan completed successfully", step="completed", details={"assets": scan.assets_found, "findings": scan.findings_count})
         final_assets = scan.assets_found
         final_findings = scan.findings_count
 
-    logger.info(f"Scan {scan_id} completed. Assets: {final_assets}, Findings: {final_findings}")
+    logger.info("Scan %s completed. Assets=%s Findings=%s", scan_id, final_assets, final_findings)
     return {
         "scan_id": scan_id,
         "status": "completed",
-        "assets": final_assets,
-        "findings": final_findings,
+        "assets": int(final_assets),
+        "findings": int(final_findings),
     }
+
+
+@celery_app.task(name="app.workers.scan_tasks.process_scheduled_scans")
+def process_scheduled_scans() -> dict:
+    return {"status": "ok"}

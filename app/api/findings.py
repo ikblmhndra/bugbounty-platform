@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.models.models import Finding, FindingCategory, FindingSeverity
+from app.models.models import Evidence, Finding, FindingCategory, FindingSeverity, FindingStatus
 from app.schemas.schemas import FindingResponse, FindingUpdate
 from app.services.validation_service import generate_validation_suggestions
 from app.utils.database import get_async_db
@@ -27,6 +27,7 @@ async def list_findings(
     category: Optional[list[FindingCategory]] = Query(None),
     is_validated: Optional[bool] = Query(None),
     false_positive: Optional[bool] = Query(None),
+    status: Optional[list[FindingStatus]] = Query(None),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_async_db),
@@ -46,6 +47,8 @@ async def list_findings(
         q = q.where(Finding.is_validated == is_validated)
     if false_positive is not None:
         q = q.where(Finding.false_positive == false_positive)
+    if status:
+        q = q.where(Finding.status.in_(status))
 
     result = await db.execute(q)
     return result.scalars().all()
@@ -77,6 +80,8 @@ async def update_finding(
 
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(finding, field, value)
+    if payload.false_positive is True:
+        finding.status = FindingStatus.FALSE_POSITIVE
     await db.commit()
     await db.refresh(finding)
     return finding
@@ -116,3 +121,9 @@ async def get_validation_commands(
         "risk_note": suggestion.risk_note,
         "disclaimer": "These commands are for manual analyst use only. Do not automate without authorization.",
     }
+
+
+@router.get("/{finding_id}/evidence")
+async def get_finding_evidence(finding_id: str, db: AsyncSession = Depends(get_async_db)):
+    result = await db.execute(select(Evidence).where(Evidence.finding_id == finding_id))
+    return result.scalars().all()

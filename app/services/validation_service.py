@@ -169,13 +169,12 @@ def _open_redirect_commands(url: str, parameter: Optional[str]) -> list[str]:
 _COMMAND_BUILDERS = {
     FindingCategory.XSS: lambda url, param: _xss_commands(url, param),
     FindingCategory.SQLI: lambda url, param: _sqli_commands(url, param),
-    FindingCategory.LFI: lambda url, param: _lfi_commands(url, param),
     FindingCategory.SSRF: lambda url, param: _ssrf_commands(url, param),
     FindingCategory.RCE: lambda url, param: _rce_commands(url, param),
-    FindingCategory.SENSITIVE_DATA: lambda url, param: _sensitive_data_commands(url),
-    FindingCategory.MISCONFIGURATION: lambda url, param: _misconfiguration_commands(url),
+    FindingCategory.EXPOSURE: lambda url, param: _sensitive_data_commands(url),
+    FindingCategory.MISCONFIG: lambda url, param: _misconfiguration_commands(url),
     FindingCategory.IDOR: lambda url, param: _idor_commands(url, param),
-    FindingCategory.OPEN_REDIRECT: lambda url, param: _open_redirect_commands(url, param),
+    FindingCategory.OTHER: lambda url, param: _open_redirect_commands(url, param),
 }
 
 _RISK_NOTES = {

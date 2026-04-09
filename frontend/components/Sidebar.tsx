@@ -4,10 +4,10 @@ import { clsx } from "clsx";
 
 const NAV_ITEMS = [
   { href: "/",          label: "Dashboard",    icon: "📊" },
-  { href: "/targets",   label: "Targets",      icon: "🎯" },
-  { href: "/scans",     label: "Scans",        icon: "🔄" },
+  { href: "/attack-surface", label: "Attack Surface", icon: "🌐" },
+  { href: "/scan-monitor", label: "Scan Monitor", icon: "🛰️" },
   { href: "/findings",  label: "Findings",     icon: "🔍" },
-  { href: "/paths",     label: "Attack Paths", icon: "🗺️" },
+  { href: "/target-profile", label: "Target Profile", icon: "🎯" },
 ];
 
 export default function Sidebar() {

@@ -29,5 +29,12 @@ celery_app.conf.update(
     task_routes={
         "app.workers.scan_tasks.run_scan": {"queue": "scans"},
     },
-    beat_schedule={},
+    task_default_rate_limit="30/m",
+    beat_schedule={
+        "scheduled-scan-orchestration": {
+            "task": "app.workers.scan_tasks.process_scheduled_scans",
+            "schedule": 300.0,
+            "options": {"queue": "orchestration"},
+        }
+    },
 )

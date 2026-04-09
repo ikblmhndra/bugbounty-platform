@@ -14,8 +14,8 @@ from sqlalchemy import desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.models.models import Scan, ScanStatus, Target
-from app.schemas.schemas import ScanCreate, ScanListResponse, ScanResponse, LogResponse
+from app.models.models import Log, Scan, ScanStage, ScanStatus, Target
+from app.schemas.schemas import LogResponse, ScanCreate, ScanListResponse, ScanResponse, ScanStageResponse
 from app.utils.database import get_async_db
 from app.utils.logging import get_logger
 from app.workers.scan_tasks import run_scan
@@ -97,13 +97,22 @@ async def get_scan_logs(
     db: AsyncSession = Depends(get_async_db),
 ):
     """Get chronological logs for a scan."""
-    from app.models.models import Log
     from sqlalchemy import asc
     result = await db.execute(
         select(Log)
         .where(Log.scan_id == scan_id)
         .order_by(asc(Log.created_at))
         .limit(limit)
+    )
+    return result.scalars().all()
+
+
+@router.get("/{scan_id}/stages", response_model=list[ScanStageResponse])
+async def get_scan_stages(scan_id: str, db: AsyncSession = Depends(get_async_db)):
+    result = await db.execute(
+        select(ScanStage)
+        .where(ScanStage.scan_id == scan_id)
+        .order_by(ScanStage.started_at.asc().nullsfirst())
     )
     return result.scalars().all()
 

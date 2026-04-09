@@ -4,6 +4,7 @@ import Layout from "../components/Layout";
 import { StatCard, StatusBadge, SectionHeader, Spinner, EmptyState } from "../components/ui";
 import { apiClient, DashboardStats } from "../lib/api";
 import { formatDistanceToNow } from "date-fns";
+import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -30,6 +31,7 @@ export default function Dashboard() {
   const topCategories = Object.entries(stats.findings_by_category)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5);
+  const severityChart = Object.entries(stats.findings_by_severity).map(([name, value]) => ({ name, value }));
 
   const getScanProgress = (scan: (typeof stats.recent_scans)[number]) => {
     if (!scan.steps_total || scan.steps_total <= 0) return 0;
@@ -138,6 +140,22 @@ export default function Dashboard() {
               })}
             </div>
           )}
+        </div>
+      </div>
+
+      <div className="mt-6 bg-bg-secondary border border-border rounded-lg p-5">
+        <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider mb-4">
+          Severity Distribution
+        </h2>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={severityChart}>
+              <XAxis dataKey="name" stroke="#94a3b8" />
+              <YAxis stroke="#94a3b8" />
+              <Tooltip />
+              <Bar dataKey="value" fill="#22d3ee" />
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       </div>
     </Layout>

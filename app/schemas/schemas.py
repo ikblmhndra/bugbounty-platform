@@ -1,18 +1,9 @@
-"""
-Pydantic v2 schemas for API request validation and response serialization.
-"""
 from datetime import datetime
-from typing import Any, Optional
-from uuid import UUID
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.models.models import (
-    AssetType,
-    FindingCategory,
-    FindingSeverity,
-    ScanStatus,
-)
+from app.models.models import AssetType, FindingCategory, FindingSeverity, FindingStatus, ScanStageType, ScanStatus, StageStatus
 
 
 # ─── Base ────────────────────────────────────────────────────────────────────
@@ -58,8 +49,12 @@ class TargetResponse(OrmBase):
 class ScanOptions(BaseModel):
     run_ffuf: bool = False
     run_gowitness: bool = True
+    run_naabu: bool = True
     nuclei_severity: str = "low,medium,high,critical"
     ffuf_wordlist: Optional[str] = None
+    adaptive_depth: bool = True
+    max_rps: int = Field(default=20, ge=1, le=500)
+    max_concurrency: int = Field(default=10, ge=1, le=200)
     timeout: int = Field(default=3600, ge=60, le=86400)
 
 
@@ -85,6 +80,19 @@ class ScanResponse(OrmBase):
     created_at: datetime
 
 
+class ScanStageResponse(OrmBase):
+    id: str
+    scan_id: str
+    stage_type: ScanStageType
+    status: StageStatus
+    attempt: int
+    max_retries: int
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    error_message: Optional[str]
+    stage_data: dict
+
+
 class ScanListResponse(OrmBase):
     id: str
     target_id: str
@@ -103,9 +111,15 @@ class ScanListResponse(OrmBase):
 
 class AssetResponse(OrmBase):
     id: str
+    target_id: str
     scan_id: str
     asset_type: AssetType
     value: str
+    normalized_key: str
+    parent_asset_id: Optional[str]
+    in_scope: bool
+    source: Optional[str]
+    raw_data: dict
     ip_address: Optional[str]
     is_alive: Optional[bool]
     status_code: Optional[int]
@@ -117,18 +131,24 @@ class AssetResponse(OrmBase):
 # ─── Finding ─────────────────────────────────────────────────────────────────
 
 class FindingUpdate(BaseModel):
-    is_validated: Optional[bool] = None
+    status: Optional[FindingStatus] = None
     analyst_notes: Optional[str] = None
     false_positive: Optional[bool] = None
 
 
 class FindingResponse(OrmBase):
     id: str
+    target_id: str
     scan_id: str
+    asset_id: Optional[str]
     category: FindingCategory
     severity: FindingSeverity
+    status: FindingStatus
     title: str
     description: Optional[str]
+    tags: list[str]
+    vuln_fingerprint: str
+    endpoint_signature: str
     url: Optional[str]
     parameter: Optional[str]
     method: Optional[str]
@@ -137,6 +157,10 @@ class FindingResponse(OrmBase):
     evidence: dict
     source_tool: Optional[str]
     template_id: Optional[str]
+    cvss_base_score: float
+    exploitability_score: float
+    weighted_score: float
+    confidence: float
     is_validated: bool
     analyst_notes: Optional[str]
     false_positive: bool
@@ -147,32 +171,19 @@ class FindingFilter(BaseModel):
     scan_id: Optional[str] = None
     severity: Optional[list[FindingSeverity]] = None
     category: Optional[list[FindingCategory]] = None
+    status: Optional[list[FindingStatus]] = None
     is_validated: Optional[bool] = None
     false_positive: Optional[bool] = None
     limit: int = Field(default=100, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
 
 
-# ─── Attack Path ─────────────────────────────────────────────────────────────
-
-class AttackPathNodeResponse(OrmBase):
+class EvidenceResponse(OrmBase):
     id: str
-    finding_id: Optional[str]
-    order: int
-    label: str
-    description: Optional[str]
-    validation_command: Optional[str]
-
-
-class AttackPathResponse(OrmBase):
-    id: str
-    scan_id: str
-    title: str
-    description: str
-    confidence: float
-    impact: Optional[str]
-    steps: list[str]
-    nodes: list[AttackPathNodeResponse]
+    finding_id: str
+    evidence_type: str
+    storage_path: Optional[str]
+    content: dict
     created_at: datetime
 
 
@@ -201,6 +212,8 @@ class DashboardStats(BaseModel):
     medium_findings: int
     low_findings: int
     findings_by_category: dict[str, int]
+    findings_by_severity: dict[str, int]
+    findings_trend: list[dict]
     recent_scans: list[ScanListResponse]
 
 

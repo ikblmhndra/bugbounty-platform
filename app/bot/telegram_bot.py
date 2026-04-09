@@ -4,9 +4,9 @@ Telegram Bot
 Commands:
     /start           - Welcome message
     /scan <domain>   - Trigger a scan
-    /status          - List recent scans
-    /report <id>     - Get report link for a scan
-    /findings <id>   - Summary of findings for a scan
+    /status <id>     - Scan status and stages
+    /findings        - Recent findings
+    /critical        - Critical open findings
     /help            - Show command list
 
 The bot communicates with the platform API over HTTP.
@@ -95,10 +95,9 @@ def cmd_help(message):
         "🔍 *Bug Bounty Platform Bot*\n\n"
         "Available commands:\n\n"
         "`/scan <domain>` — Start a scan\n"
-        "`/status` — Recent scans\n"
-        "`/report <scan_id>` — Get a JSON report\n"
-        "`/findings <scan_id>` — Findings summary\n"
-        "`/paths <scan_id>` — Attack path analysis\n"
+        "`/status <scan_id>` — Scan status and stages\n"
+        "`/findings` — Recent findings\n"
+        "`/critical` — Critical finding feed\n"
         "`/cancel <scan_id>` — Cancel a running scan\n"
         "`/help` — Show this message\n\n"
         "_All scans are analyst-assisted. No autonomous exploitation is performed._"
@@ -148,85 +147,42 @@ def cmd_scan(message):
 @bot.message_handler(commands=["status"])
 @authorized_only
 def cmd_status(message):
-    scans = api_get("/scans?limit=10")
-    if scans is None:
-        bot.reply_to(message, "❌ Failed to fetch scans.")
-        return
-    if not scans:
-        bot.reply_to(message, "No scans found.")
-        return
-
-    lines = ["📋 *Recent Scans*\n"]
-    for s in scans:
-        emoji = status_emoji(s["status"])
-        short_id = s["id"][:8]
-        lines.append(
-            f"{emoji} `{short_id}...` | {s['status']} | "
-            f"🎯 {s.get('assets_found', 0)} assets | "
-            f"🔎 {s.get('findings_count', 0)} findings"
-        )
-    bot.reply_to(message, "\n".join(lines))
-
-
-@bot.message_handler(commands=["report"])
-@authorized_only
-def cmd_report(message):
     parts = message.text.strip().split(maxsplit=1)
     if len(parts) < 2:
-        bot.reply_to(message, "Usage: `/report <scan_id>`")
+        bot.reply_to(message, "Usage: `/status <scan_id>`")
         return
-
     scan_id = parts[1].strip()
     scan = api_get(f"/scans/{scan_id}")
+    stages = api_get(f"/scans/{scan_id}/stages") or []
     if not scan:
-        bot.reply_to(message, f"❌ Scan `{scan_id}` not found.")
+        bot.reply_to(message, "❌ Scan not found.")
         return
-
-    report = api_get(f"/reports/{scan_id}?fmt=json")
-    if not report:
-        bot.reply_to(message, "❌ Failed to generate report.")
-        return
-
-    summary = report.get("summary", {})
-    findings = report.get("findings", [])[:5]  # show top 5 in Telegram
 
     lines = [
-        f"📊 *Report: `{scan_id[:8]}...`*\n",
-        f"*Assets:* {summary.get('assets', 0)}",
-        f"*Findings:* {summary.get('findings', 0)}",
-        f"*Attack Paths:* {summary.get('attack_paths', 0)}\n",
-        "*Top Findings:*",
+        f"📋 *Scan Status*\n",
+        f"ID: `{scan_id[:8]}...`",
+        f"Status: {status_emoji(scan['status'])} {scan['status']}",
+        f"Assets: {scan.get('assets_found', 0)} | Findings: {scan.get('findings_count', 0)}",
+        "",
+        "*Stages:*",
     ]
-
-    for f in findings:
-        emoji = sev_emoji(f["severity"])
-        lines.append(f"{emoji} [{f['severity'].upper()}] {f['title'][:60]}")
-
-    if len(report.get("findings", [])) > 5:
-        lines.append(f"_...and {len(report['findings']) - 5} more_")
-
-    lines.append(f"\n🔗 Full report: `GET /api/v1/reports/{scan_id}?fmt=html`")
+    for st in stages:
+        lines.append(f"- `{st['stage_type']}`: {st['status']} (attempt {st['attempt']})")
     bot.reply_to(message, "\n".join(lines))
 
 
 @bot.message_handler(commands=["findings"])
 @authorized_only
 def cmd_findings(message):
-    parts = message.text.strip().split(maxsplit=1)
-    if len(parts) < 2:
-        bot.reply_to(message, "Usage: `/findings <scan_id>`")
-        return
-
-    scan_id = parts[1].strip()
-    findings = api_get(f"/findings?scan_id={scan_id}&limit=20")
+    findings = api_get("/findings?limit=20")
     if findings is None:
         bot.reply_to(message, "❌ Failed to fetch findings.")
         return
     if not findings:
-        bot.reply_to(message, f"No findings for scan `{scan_id[:8]}...`")
+        bot.reply_to(message, "No findings in this window.")
         return
 
-    lines = [f"🔍 *Findings for `{scan_id[:8]}...`* ({len(findings)} shown)\n"]
+    lines = [f"🔍 *Recent Findings* ({len(findings)} shown)\n"]
     for f in findings:
         emoji = sev_emoji(f["severity"])
         validated = "✅" if f.get("is_validated") else ""
@@ -236,32 +192,19 @@ def cmd_findings(message):
     bot.reply_to(message, "\n".join(lines))
 
 
-@bot.message_handler(commands=["paths"])
+@bot.message_handler(commands=["critical"])
 @authorized_only
-def cmd_paths(message):
-    parts = message.text.strip().split(maxsplit=1)
-    if len(parts) < 2:
-        bot.reply_to(message, "Usage: `/paths <scan_id>`")
+def cmd_critical(message):
+    findings = api_get("/findings?severity=critical&limit=20")
+    if findings is None:
+        bot.reply_to(message, "❌ Failed to fetch critical findings.")
         return
-
-    scan_id = parts[1].strip()
-    paths = api_get(f"/paths?scan_id={scan_id}")
-    if paths is None:
-        bot.reply_to(message, "❌ Failed to fetch attack paths.")
+    if not findings:
+        bot.reply_to(message, "No critical findings.")
         return
-    if not paths:
-        bot.reply_to(message, f"No attack paths identified for scan `{scan_id[:8]}...`")
-        return
-
-    lines = [f"🗺️ *Attack Paths for `{scan_id[:8]}...`*\n"]
-    for p in paths:
-        confidence_pct = int(p["confidence"] * 100)
-        lines += [
-            f"*{p['title']}*",
-            f"Confidence: {confidence_pct}% | Impact: {p.get('impact', 'N/A')}",
-            "",
-        ]
-
+    lines = ["🚨 *Critical Findings*\n"]
+    for f in findings:
+        lines.append(f"🔴 `{f['scan_id'][:8]}...` {f['title'][:70]}")
     bot.reply_to(message, "\n".join(lines))
 
 
