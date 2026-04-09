@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     ffuf_path: str = "ffuf"
     nuclei_path: str = "nuclei"
     gowitness_path: str = "gowitness"
+    naabu_path: str = "naabu"
+    nmap_path: str = "nmap"
+    nikto_path: str = "nikto"
+    whatweb_path: str = "whatweb"
 
     # Scan configuration
     default_scan_timeout: int = 3600

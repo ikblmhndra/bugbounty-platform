@@ -8,12 +8,12 @@
 }
 
 body {
-  background-color: #0d1117;
-  color: #c9d1d9;
+  background-color: #050705;
+  color: #d4ffd0;
 }
 
 /* Custom scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #0d1117; }
-::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #484f58; }
+::-webkit-scrollbar-track { background: #050705; }
+::-webkit-scrollbar-thumb { background: #1f3a1f; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #2e5a2e; }

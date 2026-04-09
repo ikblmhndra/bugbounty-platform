@@ -4,6 +4,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.models import AssetType, FindingCategory, FindingSeverity, FindingStatus, ScanStageType, ScanStatus, StageStatus
+from app.utils.validation import sanitize_domain
 
 
 # ─── Base ────────────────────────────────────────────────────────────────────
@@ -50,17 +51,26 @@ class ScanOptions(BaseModel):
     run_ffuf: bool = False
     run_gowitness: bool = True
     run_naabu: bool = True
+    run_nikto: bool = True
+    run_whatweb: bool = True
     nuclei_severity: str = "low,medium,high,critical"
     ffuf_wordlist: Optional[str] = None
     adaptive_depth: bool = True
     max_rps: int = Field(default=20, ge=1, le=500)
     max_concurrency: int = Field(default=10, ge=1, le=200)
+    thread_limit: int = Field(default=50, ge=1, le=200)
+    rate_limit: int = Field(default=100, ge=1, le=2000)
     timeout: int = Field(default=3600, ge=60, le=86400)
 
 
 class ScanCreate(BaseModel):
     domain: str = Field(..., min_length=3)
     options: ScanOptions = Field(default_factory=ScanOptions)
+
+    @field_validator("domain")
+    @classmethod
+    def normalize_scan_domain(cls, v: str) -> str:
+        return sanitize_domain(v)
 
 
 class ScanResponse(OrmBase):

@@ -26,6 +26,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libatk-bridge2.0-0 \
     libgtk-3-0 \
     libxss1 \
+    nmap \
+    nikto \
+    whatweb \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Go installation ────────────────────────────────────────────────────────────
@@ -56,6 +59,7 @@ RUN CGO_ENABLED=0 go install -v github.com/lc/gau/v2/cmd/gau@latest
 RUN CGO_ENABLED=0 go install -v github.com/tomnomnom/waybackurls@latest
 RUN CGO_ENABLED=0 go install -v github.com/ffuf/ffuf/v2@latest
 RUN CGO_ENABLED=0 go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+RUN CGO_ENABLED=0 go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
 RUN CGO_ENABLED=0 go install -v github.com/hahwul/dalfox/v2@latest
 
 # ── katana (requires CGO + libpcap) ───────────────────────────────────────────

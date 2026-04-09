@@ -21,12 +21,23 @@ class ScanStatus(str, enum.Enum):
 
 
 class ScanStageType(str, enum.Enum):
-    RECON = "recon"
-    ENUMERATION = "enumeration"
-    PROBING = "probing"
-    SCANNING = "scanning"
-    VALIDATION = "validation"
+    TARGET_INPUT = "target_input"
+    SUBDOMAIN_ENUM = "subdomain_enum"
+    ALIVE_DETECTION = "alive_detection"
+    URL_COLLECTION = "url_collection"
+    ENDPOINT_PARSING = "endpoint_parsing"
+    ATTACK_SURFACE_MODELING = "attack_surface_modeling"
+    RISK_SCORING = "risk_scoring"
+    SMART_PRIORITIZATION = "smart_prioritization"
+    ORCHESTRATION = "orchestration"
+    VULN_SCANNING = "vuln_scanning"
+    PORT_SCANNING = "port_scanning"
+    TECH_DETECTION = "tech_detection"
+    SCREENSHOT = "screenshot"
+    NORMALIZATION = "normalization"
+    STORAGE = "storage"
     REPORTING = "reporting"
+    DASHBOARD_EXPOSURE = "dashboard_exposure"
 
 
 class StageStatus(str, enum.Enum):
@@ -152,6 +163,10 @@ class Asset(Base):
     technologies = Column(JSONB, default=list)   # detected tech stack
     headers = Column(JSONB, default=dict)
     screenshot_path = Column(String(512), nullable=True)
+    endpoint_path = Column(String(2048), nullable=True)
+    query_params = Column(JSONB, default=list)
+    endpoint_category = Column(String(32), nullable=True, index=True)
+    risk_score = Column(Integer, nullable=False, default=0, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -305,3 +320,24 @@ class Log(Base):
 
     def __repr__(self) -> str:
         return f"<Log [{self.level}] {self.message[:60]}>"
+
+
+class AttackSurfaceNode(Base):
+    __tablename__ = "attack_surface_nodes"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    scan_id = Column(UUID(as_uuid=False), ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    target_id = Column(UUID(as_uuid=False), ForeignKey("targets.id", ondelete="CASCADE"), nullable=False, index=True)
+    node_type = Column(String(32), nullable=False, index=True)  # domain|subdomain|endpoint
+    value = Column(String(2048), nullable=False)
+    parent_value = Column(String(2048), nullable=True, index=True)
+    endpoint_category = Column(String(32), nullable=True)
+    risk_score = Column(Integer, nullable=False, default=0, index=True)
+    risk_level = Column(String(16), nullable=False, default="low", index=True)
+    node_metadata = Column(JSONB, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("scan_id", "node_type", "value", name="uq_attack_surface_scan_node"),
+        Index("ix_attack_surface_scan_risk", "scan_id", "risk_level", "risk_score"),
+    )

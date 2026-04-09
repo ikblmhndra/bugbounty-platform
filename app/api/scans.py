@@ -7,21 +7,26 @@ GET  /scans/{id}     - Get scan detail
 GET  /scans/{id}/logs - Get scan logs
 DELETE /scans/{id}   - Cancel/delete a scan
 """
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy import desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.models.models import Log, Scan, ScanStage, ScanStatus, Target
+from app.config import get_settings
+from app.models.models import AttackSurfaceNode, Log, Scan, ScanStage, ScanStatus, Target
 from app.schemas.schemas import LogResponse, ScanCreate, ScanListResponse, ScanResponse, ScanStageResponse
 from app.utils.database import get_async_db
 from app.utils.logging import get_logger
+from app.utils.validation import sanitize_domain
 from app.workers.scan_tasks import run_scan
 
 router = APIRouter(prefix="/scans", tags=["scans"])
 logger = get_logger(__name__)
+settings = get_settings()
 
 
 @router.post("", response_model=ScanResponse, status_code=status.HTTP_201_CREATED)
@@ -33,11 +38,16 @@ async def create_scan(
     Trigger a new scan for a domain.
     Creates or reuses a Target record, then enqueues the scan task.
     """
+    try:
+        sanitized_domain = sanitize_domain(payload.domain)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     # Upsert target
-    result = await db.execute(select(Target).where(Target.domain == payload.domain))
+    result = await db.execute(select(Target).where(Target.domain == sanitized_domain))
     target = result.scalar_one_or_none()
     if not target:
-        target = Target(domain=payload.domain)
+        target = Target(domain=sanitized_domain)
         db.add(target)
         await db.flush()
 
@@ -58,7 +68,7 @@ async def create_scan(
     await db.commit()
     await db.refresh(scan)
 
-    logger.info("Scan created", scan_id=scan.id, domain=payload.domain, task_id=task.id)
+    logger.info("Scan created", scan_id=scan.id, domain=sanitized_domain, task_id=task.id)
     return scan
 
 
@@ -130,3 +140,50 @@ async def cancel_scan(scan_id: str, db: AsyncSession = Depends(get_async_db)):
     scan.status = ScanStatus.CANCELLED
     await db.commit()
     logger.info("Scan cancelled", scan_id=scan_id)
+
+
+@router.get("/{scan_id}/attack-surface")
+async def get_attack_surface(scan_id: str, db: AsyncSession = Depends(get_async_db)):
+    result = await db.execute(
+        select(AttackSurfaceNode)
+        .where(AttackSurfaceNode.scan_id == scan_id)
+        .order_by(AttackSurfaceNode.risk_score.desc())
+    )
+    nodes = result.scalars().all()
+    return [
+        {
+            "id": n.id,
+            "type": n.node_type,
+            "value": n.value,
+            "parent_value": n.parent_value,
+            "category": n.endpoint_category,
+            "risk_score": n.risk_score,
+            "risk_level": n.risk_level,
+            "metadata": n.node_metadata,
+        }
+        for n in nodes
+    ]
+
+
+@router.get("/{scan_id}/prioritized")
+async def get_prioritized_targets(scan_id: str, db: AsyncSession = Depends(get_async_db)):
+    result = await db.execute(
+        select(AttackSurfaceNode)
+        .where(AttackSurfaceNode.scan_id == scan_id, AttackSurfaceNode.node_type == "endpoint")
+        .order_by(AttackSurfaceNode.risk_score.desc())
+    )
+    nodes = result.scalars().all()
+    return [
+        {"url": n.value, "risk_score": n.risk_score, "risk_level": n.risk_level, "category": n.endpoint_category}
+        for n in nodes
+        if n.risk_level in ("high", "medium")
+    ]
+
+
+@router.get("/{scan_id}/report/{fmt}")
+async def download_report(scan_id: str, fmt: str):
+    ext = "json" if fmt == "json" else "md"
+    path = Path(settings.reports_dir) / f"report_{scan_id}.{ext}"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Report not found")
+    return FileResponse(path=str(path), filename=path.name)

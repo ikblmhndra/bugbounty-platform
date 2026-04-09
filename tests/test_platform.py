@@ -77,7 +77,7 @@ class TestAnalysisService:
         assert any("XSS" in p.title for p in paths)
         assert all(0.0 <= p.confidence <= 1.0 for p in paths)
 
-    def test_attack_path_sqli_sensitive_data_increases_confidence(self):
+    def test_attack_path_sqli_with_additional_exposure_increases_confidence(self):
         from app.services.analysis_service import (
             analyze_finding_relationships, NormalizedFinding
         )
@@ -87,7 +87,7 @@ class TestAnalysisService:
             NormalizedFinding("SQLi", "desc", FindingCategory.SQLI, FindingSeverity.HIGH, "https://example.com")
         ]
         findings_with = findings_without + [
-            NormalizedFinding("Secrets", "desc", FindingCategory.SENSITIVE_DATA, FindingSeverity.MEDIUM, "https://example.com/secrets")
+            NormalizedFinding("Data Exposure", "desc", FindingCategory.EXPOSURE, FindingSeverity.MEDIUM, "https://example.com/secrets")
         ]
 
         paths_without = analyze_finding_relationships(findings_without)
@@ -310,3 +310,16 @@ class TestConfig:
         from app.config import Settings
         s = Settings(telegram_allowed_users="")
         assert s.allowed_telegram_users == []
+
+
+class TestPipelineHelpers:
+    def test_sanitize_domain(self):
+        from app.utils.validation import sanitize_domain
+        assert sanitize_domain("https://Example.com/path?q=1") == "example.com"
+
+    def test_endpoint_risk_scoring(self):
+        from app.services.recon_service import score_endpoint
+        endpoint = {"category": "admin", "parameters": ["id"]}
+        result = score_endpoint(endpoint, ["Apache/2.2"], [80])
+        assert result["score"] >= 7
+        assert result["level"] == "high"

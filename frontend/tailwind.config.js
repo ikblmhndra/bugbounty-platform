@@ -8,14 +8,14 @@ module.exports = {
     extend: {
       colors: {
         bg: {
-          primary:   "#0d1117",
-          secondary: "#161b22",
-          tertiary:  "#21262d",
+          primary:   "#050705",
+          secondary: "#0a120a",
+          tertiary:  "#112011",
         },
-        border: "#30363d",
+        border: "#1f3a1f",
         accent: {
-          DEFAULT: "#58a6ff",
-          hover:   "#79b8ff",
+          DEFAULT: "#39ff14",
+          hover:   "#6bff4f",
         },
         sev: {
           critical: "#ff4444",
@@ -25,9 +25,9 @@ module.exports = {
           info:     "#8b949e",
         },
         text: {
-          primary:   "#c9d1d9",
-          secondary: "#8b949e",
-          muted:     "#484f58",
+          primary:   "#d4ffd0",
+          secondary: "#8fbc8f",
+          muted:     "#5c7a5c",
         },
       },
       fontFamily: {

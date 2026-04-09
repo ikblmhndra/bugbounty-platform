@@ -17,6 +17,7 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qs, urlparse
 
 from app.config import get_settings
 from app.utils.logging import get_logger
@@ -458,3 +459,113 @@ def take_screenshots(alive_urls: list[str], output_dir: str) -> dict[str, str]:
 
     logger.info("Screenshots complete", captured=len(mapping))
     return mapping
+
+
+def parse_endpoints(urls: list[str]) -> list[dict]:
+    parsed: list[dict] = []
+    for item in urls:
+        u = urlparse(item)
+        path = u.path or "/"
+        params = sorted(parse_qs(u.query).keys())
+        lower_path = path.lower()
+        category = "general"
+        if "admin" in lower_path:
+            category = "admin"
+        elif "login" in lower_path or "auth" in lower_path:
+            category = "login/auth"
+        elif "/api" in lower_path:
+            category = "api"
+        elif any(lower_path.endswith(ext) for ext in [".js", ".css", ".png", ".jpg", ".svg", ".woff", ".ico"]):
+            category = "static"
+        parsed.append(
+            {
+                "url": item,
+                "path": path,
+                "parameters": params,
+                "category": category,
+                "subdomain": u.netloc,
+            }
+        )
+    return parsed
+
+
+def score_endpoint(endpoint: dict, technologies: list[str], open_ports: list[int]) -> dict:
+    score = 0
+    if endpoint.get("category") == "admin":
+        score += 3
+    if endpoint.get("category") == "login/auth":
+        score += 3
+    if endpoint.get("parameters"):
+        score += 2
+    tech_blob = ",".join(t.lower() for t in technologies)
+    if any(t in tech_blob for t in ["php/5", "apache/2.2", "nginx/1.10", "jquery 1."]):
+        score += 2
+    if open_ports:
+        score += 2
+    level = "low"
+    if score >= 7:
+        level = "high"
+    elif score >= 4:
+        level = "medium"
+    return {"score": score, "level": level}
+
+
+def scan_ports_naabu(targets: list[str], rate_limit: int = 1000) -> list[dict]:
+    if not targets:
+        return []
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        f.write("\n".join(targets))
+        targets_file = f.name
+    try:
+        cmd = [settings.naabu_path, "-list", targets_file, "-rate", str(rate_limit), "-json"]
+        result = run_command(cmd, timeout=600)
+        rows: list[dict] = []
+        for line in result.lines():
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return rows
+    finally:
+        os.unlink(targets_file)
+
+
+def scan_ports_nmap(targets: list[str]) -> list[dict]:
+    if not targets:
+        return []
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        f.write("\n".join(targets))
+        targets_file = f.name
+    try:
+        cmd = [settings.nmap_path, "-iL", targets_file, "-T4", "-F", "--open", "-oG", "-"]
+        result = run_command(cmd, timeout=1200)
+        rows: list[dict] = []
+        for line in result.lines():
+            if "Ports:" in line:
+                rows.append({"raw": line})
+        return rows
+    finally:
+        os.unlink(targets_file)
+
+
+def detect_tech_whatweb(targets: list[str]) -> list[dict]:
+    output: list[dict] = []
+    for target in targets[:100]:
+        result = run_command([settings.whatweb_path, "--no-errors", "--log-json=-", target], timeout=120)
+        for line in result.lines():
+            try:
+                output.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return output
+
+
+def run_nikto(targets: list[str]) -> list[dict]:
+    findings: list[dict] = []
+    for target in targets[:20]:
+        result = run_command([settings.nikto_path, "-h", target, "-Format", "json"], timeout=900)
+        try:
+            findings.append(json.loads(result.stdout or "{}"))
+        except json.JSONDecodeError:
+            findings.append({"target": target, "raw": result.stdout[:2000]})
+    return findings

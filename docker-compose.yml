@@ -44,6 +44,8 @@ services:
       redis:
         condition: service_healthy
     volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
       - ./reports:/app/reports
       - ./screenshots:/app/screenshots
 
@@ -64,6 +66,8 @@ services:
       redis:
         condition: service_healthy
     volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
       - ./reports:/app/reports
       - ./screenshots:/app/screenshots
 

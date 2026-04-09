@@ -46,6 +46,7 @@ def run_command(
     timeout: int = 300,
     cwd: Optional[str] = None,
     env: Optional[dict] = None,
+    max_output_bytes: int = 1024 * 1024,
 ) -> CommandResult:
     """
     Run a shell command synchronously (for Celery workers).
@@ -61,6 +62,10 @@ def run_command(
     """
     if isinstance(command, str):
         command = shlex.split(command)
+    if not isinstance(command, list) or not command:
+        return CommandResult(command="", returncode=-1, stdout="", stderr="Invalid command")
+    if any(("\n" in c or "\r" in c) for c in command):
+        return CommandResult(command=" ".join(command), returncode=-1, stdout="", stderr="Invalid command input")
 
     cmd_str = " ".join(command)
     logger.info("Running command", command=cmd_str, timeout=timeout)
@@ -80,11 +85,13 @@ def run_command(
             returncode=result.returncode,
             stdout_lines=len(result.stdout.splitlines()),
         )
+        stdout = result.stdout[:max_output_bytes]
+        stderr = result.stderr[:max_output_bytes]
         return CommandResult(
             command=cmd_str,
             returncode=result.returncode,
-            stdout=result.stdout,
-            stderr=result.stderr,
+            stdout=stdout,
+            stderr=stderr,
         )
     except subprocess.TimeoutExpired as e:
         logger.warning("Command timed out", command=cmd_str, timeout=timeout)

@@ -2,12 +2,23 @@ from app.models.models import ScanStageType
 
 
 STAGE_ORDER = [
-    ScanStageType.RECON,
-    ScanStageType.ENUMERATION,
-    ScanStageType.PROBING,
-    ScanStageType.SCANNING,
-    ScanStageType.VALIDATION,
+    ScanStageType.TARGET_INPUT,
+    ScanStageType.SUBDOMAIN_ENUM,
+    ScanStageType.ALIVE_DETECTION,
+    ScanStageType.URL_COLLECTION,
+    ScanStageType.ENDPOINT_PARSING,
+    ScanStageType.ATTACK_SURFACE_MODELING,
+    ScanStageType.RISK_SCORING,
+    ScanStageType.SMART_PRIORITIZATION,
+    ScanStageType.ORCHESTRATION,
+    ScanStageType.VULN_SCANNING,
+    ScanStageType.PORT_SCANNING,
+    ScanStageType.TECH_DETECTION,
+    ScanStageType.SCREENSHOT,
+    ScanStageType.NORMALIZATION,
+    ScanStageType.STORAGE,
     ScanStageType.REPORTING,
+    ScanStageType.DASHBOARD_EXPOSURE,
 ]
 
 
